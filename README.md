@@ -4,7 +4,32 @@ FastAPI 프로젝트의 pytest 실행 결과를 캐릭터와 macOS 메뉴 막대
 
 ## 현재 상태
 
-기획 단계입니다. 아래 기능은 구현 예정이며, 실행 방법과 기술 스택은 아직 정해지지 않았습니다.
+1단계인 FastAPI 샘플과 pytest 이벤트 수집기를 구현했습니다. macOS 앱과 결과 집계는 후속 단계입니다.
+
+기능을 추가할 순서와 단계별 완료 기준은 [구현 순서](IMPLEMENTATION_PLAN.md)에 정리합니다.
+
+## 개발 환경과 실행
+
+Python 3.12 이상에서 가상환경을 만들고 개발 의존성을 설치합니다.
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m pytest
+```
+
+루트의 기본 테스트 실행은 수집기의 검증 테스트만 실행합니다. 의도적으로 실패하는 FastAPI 샘플은 따로 실행합니다.
+
+```sh
+mkdir -p .menu-events
+python -m pytest -p pytest_menu_helper.plugin \
+  --menu-events .menu-events/demo.jsonl examples/fastapi_demo
+```
+
+샘플은 성공 1건·실패 1건이므로 종료 코드 1이 정상적인 데모 결과입니다. `.menu-events/demo.jsonl`에서 수집 이벤트를 확인합니다. 같은 파일로 다시 실행하면 새 실행 ID로 이어서 기록합니다.
+
+현재는 `-p pytest_menu_helper.plugin`과 `--menu-events`를 명시해야 합니다. 이벤트 형식과 제한은 [이벤트 명세](docs/EVENTS.md)를 참고하세요.
 
 ## 첫 버전 목표
 
