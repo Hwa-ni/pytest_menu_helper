@@ -34,6 +34,7 @@ class _Collector:
         self.config = config
         self.root = Path(config.rootpath).resolve()
         self.run_id = str(uuid.uuid4())
+        self.occurrences: dict[str, int] = {}
         self.stream = None
         try:
             self.stream = open(path, "a", encoding="utf-8", buffering=1)
@@ -97,11 +98,27 @@ class _Collector:
     def pytest_sessionstart(self, session: pytest.Session) -> None:
         self._write("session_start")
 
+    def pytest_runtest_logstart(self, nodeid: str, location: Any) -> None:
+        self.occurrences[nodeid] = self.occurrences.get(nodeid, 0) + 1
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_makereport(self, item: pytest.Item, call: Any) -> Any:
+        result = yield
+        report = result.get_result()
+        # pytest의 strict XPASS는 failed report와 전용 longrepr로 전달된다.
+        report.menu_strict_xpass = (
+            report.when == "call" and report.failed
+            and isinstance(report.longrepr, str)
+            and report.longrepr.startswith("[XPASS(strict)] ")
+            and item.get_closest_marker("xfail") is not None
+        )
+
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         path, line, _ = report.location
         self._write(
-            "test_report", nodeid=report.nodeid, phase=report.when,
+            "test_report", nodeid=report.nodeid, occurrence=self.occurrences.get(report.nodeid, 1), phase=report.when,
             outcome=report.outcome, wasxfail=getattr(report, "wasxfail", None),
+            strict_xpass=getattr(report, "menu_strict_xpass", False),
             duration=report.duration,
             location={"path": self._absolute(path), "line": line + 1 if line is not None else None},
             failure=self._failure(report),
@@ -110,6 +127,9 @@ class _Collector:
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
             self._write("collection_error", nodeid=report.nodeid, failure=self._failure(report))
+
+    def pytest_keyboard_interrupt(self, excinfo: Any) -> None:
+        self._write("session_interrupted")
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         self._write("session_finish", exit_code=int(exitstatus), collected=session.testscollected)
