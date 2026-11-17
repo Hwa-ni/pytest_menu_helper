@@ -213,6 +213,8 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 
 결과(2026-11-17): 6항목 모두 확인했다. 1·2·3(Ctrl+C)·4·5·6은 사용자가 화면으로 봤다. 3의 kill -9와 4의 "기록 없음"은 별도 셸에서 실행하고 앱 로그로도 확인했다. 6에서 앱 ▶ 실행이 끝난 뒤 행이 "통과"로 바뀌는 것은 로그로 5/5 진행까지만 봤다.
 
+전체 자동 테스트 재실행(2026-11-17, 커밋 db00ac6 기준): `app/test.sh` Swift 134개(26개 묶음) 통과. Python `tests/`는 `~/.venvs/pmh-3.9`·`pmh-3.12`·`pmh-3.13`에서 각각 43개 통과.
+
 앱을 켜고 팝오버를 연 채로 확인한다. 느린 샘플: `~/.pmh-build/slow-sample`(테스트 5개, 약 10초).
 
 1. 새 Terminal.app 창에서 `cd ~/.pmh-build/slow-sample && ~/.venvs/pmh-3.13/bin/python -m pytest`를 실행한다. pmh-3.13 행이 "터미널 실행 중 n/5"로 바뀌고 진행 바·링·경과 시간이 움직이며, 행에 ■ 없이 ▶가 켜져 있는가. 상세에 "다른 터미널에서 시작한 실행입니다(pid N)"가 보이는가.
