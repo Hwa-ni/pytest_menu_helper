@@ -3,7 +3,7 @@ import Testing
 @testable import PMHCore
 
 private func report(_ v: [Int] = [3, 13, 1], pytest: String? = "9.0", fastapi: String? = "0.1", plugin: Bool = true) -> CheckReport {
-    CheckReport(pythonVersion: v, pytestVersion: pytest, fastapiVersion: fastapi, pluginInstalled: plugin, pluginVersion: plugin ? "0.2.0" : nil)
+    CheckReport(pythonVersion: v, pytestVersion: pytest, fastapiVersion: fastapi, pluginInstalled: plugin, pluginVersion: plugin ? "0.3.0" : nil)
 }
 private func codes(_ c: EnvCheck) -> [IssueCode] { c.issues.map(\.code) }
 
@@ -63,7 +63,7 @@ private func codes(_ c: EnvCheck) -> [IssueCode] { c.issues.map(\.code) }
     }
 
     @Test func validJsonFromScriptIsParsed() {
-        let json = "{\"python_version\":[3,12,1],\"pytest_version\":\"8.4.2\",\"fastapi_version\":null,\"plugin_installed\":true,\"plugin_version\":\"0.2.0\"}"
+        let json = "{\"python_version\":[3,12,1],\"pytest_version\":\"8.4.2\",\"fastapi_version\":null,\"plugin_installed\":true,\"plugin_version\":\"0.3.0\"}"
         let c = Interpreter.interpret(exitCode: 0, stdout: Data(json.utf8), stderr: "", timedOut: false, pythonPath: "/p", repoPath: nil)
         #expect(c.report?.pythonVersionText == "3.12.1")
         #expect(codes(c) == [.fastapiMissing])

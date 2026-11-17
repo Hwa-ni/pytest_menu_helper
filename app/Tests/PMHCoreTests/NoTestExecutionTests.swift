@@ -7,7 +7,7 @@ final class RecordingRunner: ProcessRunning {
     var calls: [(executable: String, arguments: [String], cwd: String, timeout: TimeInterval)] = []
     func run(executable: String, arguments: [String], workingDirectory: String, timeout: TimeInterval) -> ProcessOutput {
         calls.append((executable, arguments, workingDirectory, timeout))
-        let json = "{\"python_version\":[3,13,1],\"pytest_version\":\"9\",\"fastapi_version\":\"1\",\"plugin_installed\":true,\"plugin_version\":\"0.2.0\"}"
+        let json = "{\"python_version\":[3,13,1],\"pytest_version\":\"9\",\"fastapi_version\":\"1\",\"plugin_installed\":true,\"plugin_version\":\"0.3.0\"}"
         return ProcessOutput(exitCode: 0, stdout: Data(json.utf8), stderr: "", timedOut: false)
     }
 }

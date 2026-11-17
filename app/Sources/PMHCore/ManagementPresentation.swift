@@ -121,6 +121,24 @@ public enum ManagementPresentation {
         return lines
     }
 
+    /// 상세 맨 끝에 붙일 "다른 터미널 실행 감지" 조건 안내(6단계).
+    /// - Parameter check: 환경 검사 결과. 검사 중이거나 Python 자체를 쓸 수 없으면 nil을 돌려준다(먼저 고칠 문제가 있다).
+    /// - Returns: 플러그인이 없으면 감지할 수 없다는 문장, 0.2.x면 끝 확인 불가 문장, 그 밖에는 감지 조건과 끄는 조건.
+    /// 끄는 조건을 꼭 적는 이유: 자동 로드를 끈 실행은 기록 자체가 없어 앱이 "감지 안 됨"을 알려 줄 방법이 없다.
+    public static func terminalDetectionNote(_ check: EnvCheck?) -> String? {
+        guard let check = check, let report = check.report, report.pytestVersion != nil else { return nil }
+        if !report.pluginInstalled {
+            return "터미널 감지 불가: 플러그인이 없어 이 환경의 pytest 실행이 기록되지 않습니다."
+        }
+        if !Interpreter.pluginSupportsRunID(report.pluginVersion) { return nil } // 구버전 안내(조치 줄)가 먼저다
+        let off = "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1(이때는 -p pytest_menu_helper.plugin으로 켬), "
+            + "-p no:pytest_menu_helper.plugin, PYTEST_MENU_DISABLE=1로 실행하면 기록되지 않습니다."
+        if check.issues.contains(where: { $0.code == .pluginNoTerminalSupport }) {
+            return "터미널 감지: 실행은 보이지만 끝났는지 확인할 수 없습니다(플러그인 0.3.0 이상 필요). " + off
+        }
+        return "터미널 감지: 다른 터미널에서 이 프로젝트 폴더(또는 하위 폴더)로 이동해 이 환경의 python -m pytest를 실행해도 여기에 보입니다. " + off
+    }
+
     // MARK: 레이아웃
 
     /// 팝오버의 스크롤 영역 최대 높이.

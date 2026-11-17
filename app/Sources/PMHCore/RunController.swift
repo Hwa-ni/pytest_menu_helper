@@ -15,7 +15,7 @@ import Foundation
 public final class RunController {
     public static let pollInterval: TimeInterval = 0.25
     public static let stopGrace: TimeInterval = 5
-    static let aggregateTimeout: TimeInterval = 30
+    static let aggregateTimeout: TimeInterval = Aggregation.timeout
 
     private let paths: AppPaths
     private let runner: ProcessRunning
@@ -37,6 +37,10 @@ public final class RunController {
     /// 앱 종료가 시작됐는지. `lock`으로 보호한다. 켜진 뒤에는 새 자식 프로세스를 띄우지 않는다.
     /// 빠뜨리면 start 직후 종료할 때, 종료 처리가 끝난 다음에 work 큐가 pytest를 띄워 앱보다 오래 남을 수 있다.
     private var terminating = false
+    /// 이 앱이 시작한 실행 ID 전체(끝난 것 포함). `lock`으로 보호한다.
+    /// 외부 실행 감시기가 이 집합에 있는 파일을 외부 실행으로 세지 않게 해, 앱 실행이 두 번 보이지 않게 한다.
+    /// 끝난 뒤에도 지우지 않는 이유: 파일은 폴더에 남아 있고, 감시기가 나중에 처음 볼 수도 있다.
+    private var appRunIDs: Set<String> = []
 
     private final class Context {
         let runID: String
@@ -83,6 +87,8 @@ public final class RunController {
                       runID: String = UUID().uuidString.lowercased()) -> StartResult {
         lock.lock()
         if state.active != nil { lock.unlock(); return .alreadyRunning }
+        // 파일이 생기기 전에 등록해야 감시기가 이 실행을 외부 실행으로 오인하지 않는다.
+        appRunIDs.insert(runID)
         state.active = ActiveRun(runID: runID, envID: envID, projectPath: projectPath,
                                  phase: .waitingForEvents, stopping: false, startedAt: Date())
         lock.unlock()
@@ -154,6 +160,12 @@ public final class RunController {
             usleep(20_000)
         }
         return true
+    }
+
+    /// 이 앱이 시작한 실행 ID인지. 외부 실행 감시기가 부른다(어느 스레드에서든 안전).
+    public func isAppRun(_ runID: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return appRunIDs.contains(runID)
     }
 
     /// 테스트용: 지금 등록된 자식 프로세스의 pid(없으면 nil).
@@ -272,21 +284,9 @@ public final class RunController {
         complete(envID: envID, outcome: outcome, runID: ctx.runID, elapsed: elapsed)
     }
 
-    /// 판정은 Python 집계기를 1번 호출해 받는다. 실패는 판정이 아니라 오류로 돌려준다.
+    /// 판정은 Python 집계기를 1번 호출해 받는다. 외부 실행 감시기와 같은 함수(Aggregation.run)를 쓴다.
     private func aggregate(pythonPath: String, runID: String) -> RunOutcome {
-        let out = runner.run(executable: pythonPath,
-                             arguments: ["-I", "-m", "pytest_menu_helper.aggregate", paths.eventsFile(runID: runID).path],
-                             workingDirectory: "/", timeout: Self.aggregateTimeout)
-        if out.timedOut { return .aggregationFailed(message: "집계가 \(Int(Self.aggregateTimeout))초 안에 끝나지 않았습니다.") }
-        if out.exitCode != 0 {
-            let tail = out.stderr.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n").last.map(String.init) ?? ""
-            return .aggregationFailed(message: "집계 호출에 실패했습니다(종료 코드 \(out.exitCode)). 플러그인이 오래됐을 수 있습니다. \(tail)")
-        }
-        guard let summary = try? JSONDecoder().decode(RunSummary.self, from: out.stdout) else {
-            return .aggregationFailed(message: "집계 결과를 해석하지 못했습니다.")
-        }
-        if let id = summary.runID, id != runID { return .eventsMixed(foreign: 1) }
-        return .finished(summary)
+        Aggregation.run(runner: runner, pythonPath: pythonPath, eventsFile: paths.eventsFile(runID: runID), runID: runID)
     }
 
     /// 결과를 저장하고 실행 중 표시를 지운 뒤, 오래된 파일을 정리하고 알린다.
@@ -296,6 +296,8 @@ public final class RunController {
         lock.lock()
         state.results[envID] = outcome
         state.elapsed[envID] = elapsed
+        // 외부 실행 결과와 최신을 비교할 시각(RunSnapshot.merged).
+        state.finishedAt[envID] = Date()
         state.active = nil
         lock.unlock()
         FileCleaner.pruneAll(paths, keep: keep, protectingRunID: runID)

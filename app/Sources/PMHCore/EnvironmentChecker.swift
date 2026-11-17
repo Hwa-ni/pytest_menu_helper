@@ -61,8 +61,10 @@ public struct EnvironmentChecker {
     public static let pluginEntryPointName = "pytest_menu_helper.plugin"
 
     /// 메타데이터(dist-info)만 읽는다. pytest·fastapi도 import하지 않는다.
+    /// prefix(sys.prefix의 실제 경로)는 6단계에서 더했다. 다른 터미널의 pytest 실행이 이 환경의 것인지
+    /// 플러그인이 남긴 env.prefix와 맞춰 보는 데 쓴다(python 실제 경로는 가상환경끼리 같을 수 있어 못 쓴다).
     public static let script = """
-    import json, sys
+    import json, os, sys
     from importlib import metadata
     def ver(name):
         try:
@@ -80,6 +82,7 @@ public struct EnvironmentChecker {
         "fastapi_version": ver("fastapi"),
         "plugin_installed": plugin,
         "plugin_version": ver("pytest-menu-helper"),
+        "prefix": os.path.realpath(sys.prefix),
     }))
     """
 

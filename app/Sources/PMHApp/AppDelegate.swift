@@ -9,8 +9,14 @@
 // 팝오버 한 곳으로 모았다.
 // 실행 중인 환경과 그 환경이 속한 프로젝트는 제거할 수 없다. 제거하면 팝오버에서 그 행(■ 중지)이 사라지고
 // 그 실행이 끝날 때까지 다른 환경의 ▶도 꺼진 채 남기 때문이다. 화면에서 막고, 동작 함수에서도 한 번 더 막는다.
+// 6단계: 다른 터미널에서 실행한 pytest를 ExternalRunWatcher가 이벤트 폴더에서 찾아 등록 환경에 연결한다.
+// 앱 실행 상태(RunController)와 외부 실행 상태(감시기)를 RunSnapshot.merged로 합쳐 팝오버에 넣는다.
+// 이벤트 폴더는 공통 설정 파일(config.json)로 정한다(AppPaths.resolve, 플러그인과 같은 규칙).
+// 외부 실행의 감지·연결·결과와 그때의 행 문구는 시스템 로그(subsystem dev.yohwan.pytest-menu-helper,
+// category external)에 남긴다. 화면 자동화가 없어 통합 검증을 이 로그로 한다(docs/APP.md "6단계").
 
 import AppKit
+import os
 import PMHCore
 import SwiftUI
 
@@ -37,10 +43,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private let notifyQueue = DispatchQueue(label: "pmh.menu-notify")
     /// pytest 실행 담당. 프로세스·파일 읽기·집계는 컨트롤러의 백그라운드 큐에서 한다.
     /// 변경 알림은 notifyQueue로 받은 뒤 메인 스레드에 넘긴다.
-    private lazy var controller = RunController(notifyQueue: notifyQueue) { [weak self] snapshot in
+    /// 공통 설정 파일까지 반영한 저장 위치와, 설정 파일을 쓸 수 없을 때의 안내(팝오버 위 주황 문장).
+    /// 앱 시작 때 한 번만 읽는다. 설정을 바꾸면 앱을 다시 시작해야 한다(플러그인은 실행마다 읽는다).
+    private let resolvedPaths = AppPaths.resolve(base: AppPaths.defaultBase)
+    private lazy var controller = RunController(paths: resolvedPaths.paths, notifyQueue: notifyQueue) { [weak self] snapshot in
         self?.runStateArrived(snapshot)
     }
+    /// 다른 터미널 실행 감시기. 앱이 시작한 실행 ID는 컨트롤러에 물어 제외한다(같은 실행이 두 번 보이지 않게).
+    private lazy var watcher = ExternalRunWatcher(
+        eventsDir: resolvedPaths.paths.eventsDir,
+        isAppRun: { [weak self] runID in self?.controller.isAppRun(runID) ?? false },
+        notifyQueue: notifyQueue,
+        onChange: { [weak self] snapshot in self?.externalStateArrived(snapshot) },
+        onLog: { message in AppDelegate.log.notice("\(message, privacy: .public)") })
+    /// 외부 실행 로그. 개인 정보 가림을 끄는(.public) 이유: 경로·실행 ID를 검증에 그대로 봐야 한다(로컬 기기 로그).
+    static let log = Logger(subsystem: "dev.yohwan.pytest-menu-helper", category: "external")
     private var runSnapshot = RunSnapshot(active: nil, results: [:])
+    private var externalSnapshot = ExternalSnapshot()
+    /// 감시기에 마지막으로 넘긴 매칭 대상. 같으면 다시 넘기지 않는다.
+    private var lastTargets: [ProjectTarget]?
+    /// 환경 id → 마지막으로 로그에 남긴 행 문구. 바뀔 때만 남긴다.
+    private var loggedRowText: [String: String] = [:]
     private lazy var checker: EnvironmentChecker = {
         let repo = Bundle.main.object(forInfoDictionaryKey: "PMHRepoPath") as? String
         return EnvironmentChecker(repoPath: repo)
@@ -65,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         pushPopoverState()
         // 이전 실행이 남긴 이벤트·로그 파일 중 최신 50개만 남긴다(백그라운드).
         controller.cleanup()
+        AppDelegate.log.notice("이벤트 폴더 감시 시작: \(self.resolvedPaths.paths.eventsDir.path, privacy: .public)")
+        watcher.start()
     }
 
     /// 앱을 끄면 실행 중인 pytest를 끝내고 나서 돌아온다.
@@ -96,6 +121,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private func runStateChanged(_ snapshot: RunSnapshot) {
         runSnapshot = snapshot
         pushPopoverState()
+    }
+
+    /// 감시기 알림(notifyQueue에서 호출됨)을 앱 실행 알림과 같은 방식(common 모드 + 깨우기)으로 메인에 넘긴다.
+    /// 같은 직렬 큐를 거치므로 두 알림의 순서가 뒤섞이지 않는다.
+    private func externalStateArrived(_ snapshot: ExternalSnapshot) {
+        let main = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(main, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            guard let self = self else { return }
+            self.externalSnapshot = snapshot
+            self.pushPopoverState()
+        }
+        CFRunLoopWakeUp(main)
     }
 
     // MARK: 팝오버
@@ -135,8 +172,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
     /// 팝오버 화면에 지금 상태를 넣는다(메인 스레드). 등록·검사·실행 상태가 바뀌는 모든 곳에서 부른다.
     private func pushPopoverState() {
-        popoverModel.update(registry: registry, checks: checks, snapshot: runSnapshot,
-                            notices: [loadWarning, saveError].compactMap { $0 })
+        let merged = runSnapshot.merged(external: externalSnapshot)
+        popoverModel.update(registry: registry, checks: checks, snapshot: merged,
+                            notices: [loadWarning, saveError, resolvedPaths.warning].compactMap { $0 })
+        // 등록·검사 결과가 바뀌면 감시기의 매칭 대상도 바꾼다(검사가 끝나야 환경 prefix를 안다).
+        let targets = ExternalMatching.targets(registry: registry, checks: checks)
+        if targets != lastTargets {
+            lastTargets = targets
+            watcher.updateTargets(targets)
+        }
+        logTerminalRows(merged)
+    }
+
+    /// 터미널 실행이 걸린 환경의 행 문구를 바뀔 때만 시스템 로그에 남긴다(통합 검증용, 화면과 같은 함수로 만든다).
+    private func logTerminalRows(_ snapshot: RunSnapshot) {
+        for project in registry.projects {
+            for env in project.environments
+            where snapshot.external[env.id] != nil || snapshot.sources[env.id] == .terminal {
+                let text = ResultPresentation.row(env: env, check: checks[env.id], snapshot: snapshot, selected: false).statusText
+                if loggedRowText[env.id] != text {
+                    loggedRowText[env.id] = text
+                    AppDelegate.log.notice("[화면 행] \(project.name, privacy: .public)/\(env.name, privacy: .public): \(text, privacy: .public)")
+                }
+            }
+        }
     }
 
     /// 아이콘 클릭. 오른쪽 클릭이나 control+왼쪽 클릭이면 종료 메뉴, 그 밖의 왼쪽 클릭이면 팝오버.

@@ -19,6 +19,8 @@ public enum EnvStatus: Int, Comparable, Codable {
 public enum IssueCode: String, Codable {
     case pathMissing, notExecutable, runFailed, timedOut, invalidOutput
     case pythonTooOld, pytestMissing, pluginMissing, pluginOutdated, fastapiMissing
+    /// 플러그인이 0.2.x라 앱 실행은 되지만 다른 터미널의 실행을 정확히 알아보지 못함(6단계, 실행 버튼은 막지 않음).
+    case pluginNoTerminalSupport
 }
 
 public struct Issue: Equatable {
@@ -37,6 +39,9 @@ public struct CheckReport: Codable, Equatable {
     public var pluginInstalled: Bool
     /// 설치된 플러그인 버전. 설치 정보가 없으면 nil(구버전 판정).
     public var pluginVersion: String?
+    /// sys.prefix의 실제 경로(가상환경 폴더). 다른 터미널 실행을 이 환경에 연결할 때 쓴다.
+    /// 6단계 전에 만든 검사 결과에는 없을 수 있어 선택 값이다.
+    public var prefix: String?
 
     enum CodingKeys: String, CodingKey {
         case pythonVersion = "python_version"
@@ -44,13 +49,14 @@ public struct CheckReport: Codable, Equatable {
         case fastapiVersion = "fastapi_version"
         case pluginInstalled = "plugin_installed"
         case pluginVersion = "plugin_version"
+        case prefix
     }
 
     public init(pythonVersion: [Int], pytestVersion: String?, fastapiVersion: String?,
-                pluginInstalled: Bool, pluginVersion: String? = nil) {
+                pluginInstalled: Bool, pluginVersion: String? = nil, prefix: String? = nil) {
         self.pythonVersion = pythonVersion; self.pytestVersion = pytestVersion
         self.fastapiVersion = fastapiVersion; self.pluginInstalled = pluginInstalled
-        self.pluginVersion = pluginVersion
+        self.pluginVersion = pluginVersion; self.prefix = prefix
     }
 
     public var pythonVersionText: String { pythonVersion.map(String.init).joined(separator: ".") }

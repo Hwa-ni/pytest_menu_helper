@@ -12,14 +12,24 @@ ROOT = Path(__file__).resolve().parents[1]
 DEMO = ROOT / "examples" / "fastapi_demo"
 
 
-def run_pytest(project, *args, use_project_root=True, extra_env=None):
+def run_pytest(project, *args, use_project_root=True, extra_env=None, drop_env=()):
+    """플러그인을 -p로 직접 불러 실제 pytest 프로세스를 실행한다.
+
+    매개변수 drop_env: 기본으로 넣는 변수 중 지울 이름들. 공통 설정 파일(config.json) 확인처럼
+    PYTEST_MENU_EVENTS_DIR이 없어야 하는 테스트가 쓴다.
+    """
     env = os.environ.copy()
+    # 이 테스트 자체를 플러그인이 설치된 환경에서 돌리면 바깥 pytest가 중첩 표시 변수를 넣는다.
+    # 지우지 않으면 아래 실행이 모두 "중첩 실행"(parent_run_id)으로 기록된다.
+    env.pop("PMH_PARENT_RUN_ID", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env.pop("PYTEST_MENU_DISABLE", None)
     env.pop("PMH_ENV_ID", None)
     # Never write into the real events folder from tests.
     env["PYTEST_MENU_EVENTS_DIR"] = str(project / ".isolated-events")
     env.update(extra_env or {})
+    for name in drop_env:
+        env.pop(name, None)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(ROOT / "src"), env.get("PYTHONPATH", "")]
     )
@@ -274,3 +284,115 @@ def test_invalid_pmh_run_id_is_ignored(tmp_path):
         assert file.name == f"{run_id}.jsonl"
         assert run_id.replace("-", "") not in [b.replace("-", "") for b in bad_values]
     assert not (tmp_path / "evil.jsonl").exists()
+
+
+# 6단계: 공통 설정 파일과 다른 터미널 실행 감지용 필드
+
+
+def _write_config(home, content):
+    """HOME 아래 앱 기준 폴더에 config.json을 쓴다. content가 str이면 그대로(깨진 JSON 확인용) 쓴다."""
+    base = home / "Library" / "Application Support" / "pytest-menu-helper"
+    base.mkdir(parents=True, exist_ok=True)
+    text = content if isinstance(content, str) else json.dumps(content)
+    (base / "config.json").write_text(text, encoding="utf-8")
+    return base
+
+
+def test_config_file_sets_events_dir_without_environment_variable(tmp_path):
+    """이미 열린 터미널처럼 PYTEST_MENU_EVENTS_DIR가 없을 때 공통 설정 파일의 폴더에 쓰는지 본다."""
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    home = tmp_path / "home"
+    target = tmp_path / "shared-events"
+    _write_config(home, {"events_dir": str(target)})
+    result = run_pytest(tmp_path, "test_ok.py", extra_env={"HOME": str(home)},
+                        drop_env=("PYTEST_MENU_EVENTS_DIR",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(list(target.glob("*.jsonl"))) == 1
+    # 설정이 있으면 기본 폴더에는 쓰지 않는다.
+    assert not (home / "Library" / "Application Support" / "pytest-menu-helper" / "events").exists()
+
+
+def test_environment_variable_beats_config_file(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    home = tmp_path / "home"
+    _write_config(home, {"events_dir": str(tmp_path / "from-config")})
+    assert run_pytest(tmp_path, "test_ok.py", extra_env={"HOME": str(home)}).returncode == 0
+    assert len(list((tmp_path / ".isolated-events").glob("*.jsonl"))) == 1
+    assert not (tmp_path / "from-config").exists()
+
+
+def test_invalid_config_falls_back_to_default_folder(tmp_path):
+    """깨진 JSON, 상대 경로, 문자열 아닌 값은 모두 무시하고 기본 폴더를 쓴다(앱과 같은 규칙)."""
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    for index, content in enumerate(["{broken", {"events_dir": "relative/events"}, {"events_dir": 3}, [],
+                                     {"events_dir": "~nobody/events"}]):
+        home = tmp_path / f"home{index}"
+        base = _write_config(home, content)
+        result = run_pytest(tmp_path, "test_ok.py", extra_env={"HOME": str(home)},
+                            drop_env=("PYTEST_MENU_EVENTS_DIR",))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(list((base / "events").glob("*.jsonl"))) == 1, content
+    assert not (tmp_path / "relative").exists()
+
+
+def test_config_events_dir_expands_home(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    home = tmp_path / "home"
+    _write_config(home, {"events_dir": "~/custom-events"})
+    result = run_pytest(tmp_path, "test_ok.py", extra_env={"HOME": str(home)},
+                        drop_env=("PYTEST_MENU_EVENTS_DIR",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(list((home / "custom-events").glob("*.jsonl"))) == 1
+
+
+def test_session_start_records_pid_invocation_dir_and_prefix(tmp_path):
+    """앱이 외부 실행을 연결·생존 확인하는 데 쓰는 필드(pid, invocation_dir, env.prefix)를 본다."""
+    sub = tmp_path / "pkg"
+    sub.mkdir()
+    (sub / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    destination = tmp_path / "events.jsonl"
+    env = os.environ.copy()
+    env.update({"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), env.get("PYTHONPATH", "")])})
+    env.pop("PMH_PARENT_RUN_ID", None)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "pytest", "--rootdir", str(tmp_path), "-p", "no:cacheprovider",
+         "-p", "pytest_menu_helper.plugin", "--menu-events", str(destination), "test_ok.py"],
+        cwd=sub, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process.communicate(timeout=30)
+    assert process.returncode == 0
+    start = read_events(destination)[0]
+    assert start["pid"] == process.pid
+    # rootdir(project_root)는 tmp_path지만 실행한 폴더는 하위 폴더다. 둘을 따로 기록해야 한다.
+    assert start["invocation_dir"] == os.path.realpath(sub)
+    assert start["project_root"] == str(tmp_path.resolve())
+    assert start["parent_run_id"] is None
+    assert start["env"]["prefix"] == os.path.realpath(sys.prefix)
+
+
+def test_nested_pytest_records_parent_run_id(tmp_path):
+    """테스트 안에서 다시 띄운 pytest는 바깥 실행 ID를 parent_run_id로 남긴다.
+
+    앱은 이 값이 있는 실행을 터미널 실행으로 보여 주지 않는다. 빠뜨리면 바깥 실행의 테스트가 띄운 pytest가
+    같은 환경의 "외부 실행"으로 보여 결과를 덮어쓴다.
+    """
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    (inner / "test_inner.py").write_text("def test_inner():\n    pass\n")
+    (tmp_path / "test_outer.py").write_text(
+        "import os, subprocess, sys\n\n"
+        "def test_outer():\n"
+        f"    inner = {str(inner)!r}\n"
+        "    subprocess.run([sys.executable, '-m', 'pytest', '-p', 'no:cacheprovider',\n"
+        "                    '-p', 'pytest_menu_helper.plugin', '--rootdir', inner, inner], check=True)\n"
+    )
+    wanted = "3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60"
+    result = run_pytest(tmp_path, "test_outer.py", extra_env={"PMH_RUN_ID": wanted})
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = {f.name: read_events(f) for f in (tmp_path / ".isolated-events").glob("*.jsonl")}
+    assert len(files) == 2
+    outer = files.pop(f"{wanted}.jsonl")
+    assert outer[0]["parent_run_id"] is None
+    nested = next(iter(files.values()))
+    assert nested[0]["parent_run_id"] == wanted
+    assert nested[0]["run_id"] != wanted

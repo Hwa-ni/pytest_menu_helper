@@ -44,12 +44,13 @@
 구현 계획의 **1~4단계**를 완료했습니다(4단계 화면 동작은 2026-11-17 사용자 확인).
 
 - FastAPI 샘플: 성공 1건과 의도된 실패 1건
-- pytest 플러그인(0.2.0): 실행 시작, 테스트 단계별 결과, 수집 오류, 중단과 종료를 JSONL(이벤트 v2)로 기록. 앱이 정한 실행 ID(`PMH_RUN_ID`)와 환경 id(`PMH_ENV_ID`)를 씁니다.
+- pytest 플러그인(0.3.0): 실행 시작, 테스트 단계별 결과, 수집 오류, 중단과 종료를 JSONL(이벤트 v2)로 기록. 앱이 정한 실행 ID(`PMH_RUN_ID`)와 환경 id(`PMH_ENV_ID`)를 씁니다. 다른 터미널 실행 감지용으로 pid·실행 폴더·환경 폴더도 남깁니다.
 - 결과 집계: 테스트별 성공·실패·오류·skip·xfail·xpass·미실행 건수와 실행 상태 판정
 - 미완료 처리: 종료 기록 누락이나 일부 단계 누락을 전체 성공으로 처리하지 않음
 - 자동 로드: 패키지를 설치하면 `pytest11` entry point로 그 환경의 모든 pytest 실행을 기록합니다. 실행마다 파일 1개를 `~/Library/Application Support/pytest-menu-helper/events/`에 씁니다(`PYTEST_MENU_DISABLE=1`로 끔). `-p`나 `--menu-events`를 따로 줄 필요가 없습니다.
 - 메뉴 막대 앱(3~4단계): 프로젝트 폴더와 Python 환경 등록, 환경 검사와 조치 안내, 앱에서 pytest 실행·중지, 진행률과 마지막 결과 한 줄 표시. 상세는 [docs/APP.md](docs/APP.md).
-- 검증: Python 테스트 34개가 3.9.6(pytest 8.4.2), 3.12.16·3.13.18(pytest 9.2.0)에서 각각 통과, Swift 테스트 51개 통과
+- 다른 터미널 감지(6단계): 플러그인이 설치된 등록 환경으로 등록 프로젝트 폴더에서 `python -m pytest`를 실행하면 앱이 그 실행을 찾아 같은 환경 행에 "터미널" 표시와 함께 보여 줍니다. 자동 로드를 끄거나(`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, `-p no:pytest_menu_helper.plugin`) 플러그인이 없으면 보이지 않습니다. 이벤트 폴더는 `~/Library/Application Support/pytest-menu-helper/config.json`의 `events_dir`로 바꿀 수 있습니다. 상세는 [docs/EVENTS.md](docs/EVENTS.md).
+- 검증: Python 테스트 43개가 3.9.6(pytest 8.4.2), 3.12.16·3.13.18(pytest 9.2.0)에서 각각 통과, Swift 테스트 134개 통과
 
 현재는 한 번에 **pytest 실행 1개**만 다룹니다. 여러 환경 동시 실행과 환경별 비교는 9단계입니다. `-k` 등으로 선택한 테스트가 통과한 것은 이번 선택 범위의 성공을 의미합니다.
 

@@ -5,6 +5,9 @@ public enum Interpreter {
     public static let minPython = [3, 9]
     /// PMH_RUN_ID를 지원하는 첫 플러그인 버전. 이보다 낮으면 앱이 실행 ID를 정할 수 없다.
     public static let minPluginVersion = [0, 2, 0]
+    /// 다른 터미널의 실행을 알아보는 필드(pid, invocation_dir, env.prefix, parent_run_id)를 남기는 첫 버전.
+    /// 이보다 낮아도 앱 실행은 되므로 실행 버튼은 막지 않고 안내만 한다.
+    public static let terminalPluginVersion = [0, 3, 0]
 
     /// 실행 전 단계 실패(경로 없음·실행 불가)를 오류로 바꾼다.
     public static func pathFailure(_ code: IssueCode, path: String) -> EnvCheck {
@@ -65,6 +68,16 @@ public enum Interpreter {
                 message: "플러그인 업데이트가 필요합니다 \(have). 앱이 정한 실행 ID(PMH_RUN_ID)는 \(minPluginVersion.map(String.init).joined(separator: ".")) 이상에서 지원합니다.",
                 fixCommand: "uv pip install --python \(q) -e \(repo)"))
         }
+        // 0.2.x: 앱 실행은 정상이지만 다른 터미널 실행은 pid가 없어 끝났는지 확인할 수 없다(미완료로만 남는다).
+        // 구버전(0.2.0 미만) 안내가 이미 있으면 같은 명령이 두 번 보이지 않게 넣지 않는다.
+        if report.pluginInstalled, pluginSupportsRunID(report.pluginVersion),
+           !isAtLeast(versionNumbers(report.pluginVersion), terminalPluginVersion) {
+            let repo = repoPath.map(shellQuote) ?? "<이 저장소 경로>"
+            issues.append(Issue(
+                code: .pluginNoTerminalSupport, severity: .actionNeeded,
+                message: "다른 터미널에서 실행한 pytest를 정확히 감지하려면 플러그인 \(terminalPluginVersion.map(String.init).joined(separator: ".")) 이상이 필요합니다(설치됨 \(report.pluginVersion ?? "?")). 앱에서 실행하는 데는 문제없습니다.",
+                fixCommand: "uv pip install --python \(q) -e \(repo)"))
+        }
         if report.fastapiVersion == nil {
             issues.append(Issue(
                 code: .fastapiMissing, severity: .actionNeeded,
@@ -82,13 +95,19 @@ public enum Interpreter {
 
     /// "0.2.0", "0.2.0.dev1" 같은 버전의 숫자 부분만 비교한다. 읽을 수 없으면 미지원으로 본다.
     public static func pluginSupportsRunID(_ version: String?) -> Bool {
-        guard let version = version else { return false }
+        let numbers = versionNumbers(version)
+        return !numbers.isEmpty && isAtLeast(numbers, minPluginVersion)
+    }
+
+    /// 버전 문자열 앞쪽의 숫자 부분만 뽑는다("0.3.0.dev1" → [0, 3, 0]). 읽을 수 없으면 빈 목록.
+    static func versionNumbers(_ version: String?) -> [Int] {
+        guard let version = version else { return [] }
         var numbers: [Int] = []
         for part in version.split(separator: ".") {
             guard let n = Int(part.prefix(while: \.isNumber)), part.first?.isNumber == true else { break }
             numbers.append(n)
         }
-        return !numbers.isEmpty && isAtLeast(numbers, minPluginVersion)
+        return numbers
     }
 
     static func isAtLeast(_ v: [Int], _ min: [Int]) -> Bool {

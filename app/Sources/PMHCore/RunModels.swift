@@ -10,9 +10,12 @@ import Foundation
 public enum Termination: Equatable {
     case exit(Int32)
     case signal(Int32)
+    /// 앱이 띄우지 않은 프로세스(다른 터미널의 pytest)라 종료 코드를 알 수 없다. 프로세스가 사라진 것만 안다.
+    case unknown
 
     public var text: String {
         switch self {
+        case .unknown: return "프로세스 종료됨(종료 코드 모름)"
         case .exit(let code): return "종료 코드 \(code)"
         case .signal(let n):
             let names: [Int32: String] = [1: "HUP", 2: "INT", 6: "ABRT", 9: "KILL", 11: "SEGV", 15: "TERM"]
@@ -270,15 +273,46 @@ public struct ActiveRun: Equatable {
 }
 
 /// 실행 상태 전체. 결과는 메모리에만 있고 앱을 다시 시작하면 사라진다(보존은 11단계).
+/// RunController는 앱 실행 값(active, results, elapsed, finishedAt)만 채운다.
+/// 외부 실행 값(external, sources, unregistered)은 merged(external:)가 감시기 상태를 합쳐 채운다.
 public struct RunSnapshot: Equatable {
     public var active: ActiveRun?
     public var results: [String: RunOutcome] // 환경 id → 마지막 결과
     /// 환경 id → 마지막 실행의 소요 시간(초). pytest 프로세스 시작부터 종료까지이며 집계 호출 시간은 뺀다.
     /// 시작하지 못한 실행(launchFailed)은 값이 없다.
     public var elapsed: [String: TimeInterval]
+    /// 환경 id → 마지막 결과가 정해진 시각. 앱 실행과 외부 실행 중 최신 결과를 고를 때 쓴다.
+    public var finishedAt: [String: Date] = [:]
+    /// 환경 id → 마지막 결과의 출처. 키가 없으면 앱 실행이다.
+    public var sources: [String: RunSource] = [:]
+    /// 환경 id → 진행 중인 외부 실행(같은 환경에 여럿이면 가장 나중에 시작한 것).
+    public var external: [String: ExternalActive] = [:]
+    /// 등록하지 않은 환경에서 실행한 최근 외부 실행(감시기 값 그대로).
+    public var unregistered: [UnregisteredRun] = []
 
     public init(active: ActiveRun? = nil, results: [String: RunOutcome] = [:], elapsed: [String: TimeInterval] = [:]) {
         self.active = active; self.results = results; self.elapsed = elapsed
+    }
+
+    /// 앱 실행 상태(self)에 외부 실행 상태를 합친다. 순수 함수다.
+    /// - Parameter external: 감시기 상태.
+    /// - Returns: 환경마다 앱 실행과 외부 실행 중 나중에 끝난 결과를 "마지막 결과"로 둔 상태.
+    /// 규칙: 앱 결과가 없거나, 앱 결과 시각을 모르거나(이전 형식 값), 외부 결과가 더 늦게 끝났으면 외부 결과를 쓴다.
+    /// 같은 실행이 두 번 보이지 않는 이유: 감시기는 앱이 시작한 실행 ID를 처음부터 제외하므로
+    /// 한 실행은 앱 쪽 또는 외부 쪽 한 곳에만 있다.
+    public func merged(external ext: ExternalSnapshot) -> RunSnapshot {
+        var s = self
+        for (envID, r) in ext.results {
+            if let appTime = finishedAt[envID], results[envID] != nil, appTime >= r.finishedAt { continue }
+            s.results[envID] = r.outcome
+            s.elapsed[envID] = r.elapsed
+            s.finishedAt[envID] = r.finishedAt
+            s.sources[envID] = .terminal
+        }
+        // active는 시작 시각 순이라 뒤의 것이 덮어써 "가장 나중에 시작한 실행"이 남는다.
+        for a in ext.active { s.external[a.envID] = a }
+        s.unregistered = ext.unregistered
+        return s
     }
 }
 

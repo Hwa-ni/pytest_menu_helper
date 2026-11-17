@@ -41,7 +41,7 @@ private func decodeSummary(_ json: String) throws -> RunSummary {
 
 private func readyCheck(_ version: [Int] = [3, 13, 18]) -> EnvCheck {
     EnvCheck(status: .ready, report: CheckReport(pythonVersion: version, pytestVersion: "9.2.0",
-                                                  fastapiVersion: "0.1", pluginInstalled: true, pluginVersion: "0.2.0"),
+                                                  fastapiVersion: "0.1", pluginInstalled: true, pluginVersion: "0.3.0"),
              issues: [])
 }
 

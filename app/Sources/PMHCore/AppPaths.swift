@@ -1,22 +1,74 @@
 // AppPaths.swift
 // 앱과 pytest 플러그인이 함께 쓰는 로컬 저장 위치(이벤트 폴더, 로그 폴더)를 정하고,
 // 오래된 실행 파일을 정리하는 코드를 담는다.
-// 입력: 저장 기준 폴더(기본은 ~/Library/Application Support/pytest-menu-helper).
-// 출력: 실행 ID별 이벤트·로그 파일 경로, 정리된 파일 이름 목록.
+// 입력: 저장 기준 폴더(기본은 ~/Library/Application Support/pytest-menu-helper)와
+//       그 안의 공통 설정 파일 config.json(선택, {"events_dir": "<절대 경로>"}).
+// 출력: 실행 ID별 이벤트·로그 파일 경로, 설정 파일을 읽지 못했을 때의 안내 문장, 정리된 파일 이름 목록.
+// 6단계: 이미 열린 다른 터미널은 앱이 정한 환경변수(PYTEST_MENU_EVENTS_DIR)를 받지 못한다.
+// 그래서 앱과 플러그인이 같은 설정 파일을 같은 규칙으로 읽어 이벤트 폴더를 정한다(plugin.py의 events_dir와 같은 규칙).
 
 import Foundation
 
 /// 앱과 플러그인이 공유하는 로컬 저장 위치. 사용자 전용(0700)으로 만든다.
 public struct AppPaths: Equatable {
     public var base: URL
-    public var eventsDir: URL { base.appendingPathComponent("events", isDirectory: true) }
+    /// 공통 설정 파일이 정한 이벤트 폴더. nil이면 기본 폴더(base/events)다.
+    public var eventsDirOverride: URL?
+    public var eventsDir: URL { eventsDirOverride ?? base.appendingPathComponent("events", isDirectory: true) }
     public var logsDir: URL { base.appendingPathComponent("logs", isDirectory: true) }
+    /// 공통 설정 파일 위치. 플러그인도 같은 위치(~/Library/Application Support/pytest-menu-helper/config.json)를 읽는다.
+    public var configFile: URL { base.appendingPathComponent("config.json") }
 
-    public init(base: URL) { self.base = base }
+    public init(base: URL, eventsDirOverride: URL? = nil) {
+        self.base = base
+        self.eventsDirOverride = eventsDirOverride
+    }
 
-    public static var `default`: AppPaths {
-        AppPaths(base: FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/pytest-menu-helper", isDirectory: true))
+    /// 기본 기준 폴더(~/Library/Application Support/pytest-menu-helper).
+    public static var defaultBase: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/pytest-menu-helper", isDirectory: true)
+    }
+
+    /// 기본 기준 폴더와 공통 설정 파일로 정한 위치. 설정 파일 안내 문장이 필요하면 resolve를 직접 부른다.
+    public static var `default`: AppPaths { resolve(base: defaultBase).paths }
+
+    /// 기준 폴더의 config.json을 읽어 이벤트 폴더를 정한다.
+    /// - Parameters:
+    ///   - base: 기준 폴더. 그 안의 config.json을 읽는다.
+    ///   - home: "~"를 풀 때 쓸 홈 폴더. 테스트에서 바꿀 수 있게 매개변수로 둔다.
+    /// - Returns: paths(정한 위치)와 warning(설정 파일이 있는데 쓸 수 없을 때의 안내, 정상이거나 파일이 없으면 nil).
+    /// 규칙(플러그인과 같아야 한다): 파일이 없거나, JSON이 아니거나, 최상위가 객체가 아니거나, events_dir가
+    /// 빈 문자열·문자열 아님·"~"를 풀어도 상대 경로면 기본 폴더를 쓴다. 예외를 던지지 않는다.
+    /// 주의: 플러그인은 잘못된 설정을 조용히 무시하고, 앱은 같은 결론(기본 폴더)에 안내만 덧붙인다.
+    /// 두 쪽이 다른 폴더를 고르면 다른 터미널의 실행이 보이지 않으므로 규칙을 바꾸면 plugin.py도 함께 고친다.
+    public static func resolve(base: URL, home: String = NSHomeDirectory()) -> (paths: AppPaths, warning: String?) {
+        let fallback = AppPaths(base: base)
+        let file = base.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: file.path) else { return (fallback, nil) }
+        let note = "공통 설정 파일(\(file.path))의 events_dir를 쓸 수 없어 기본 이벤트 폴더를 씁니다."
+        guard let data = try? Data(contentsOf: file),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (fallback, note + " JSON 형식을 확인하세요.")
+        }
+        // events_dir 키가 아예 없으면 다른 설정만 담은 정상 파일로 보고 안내하지 않는다.
+        guard let raw = object["events_dir"] else { return (fallback, nil) }
+        guard let text = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            return (fallback, note + " 값은 절대 경로 문자열이어야 합니다.")
+        }
+        let expanded = expandHome(text, home: home)
+        guard expanded.hasPrefix("/") else {
+            return (fallback, note + " 상대 경로는 쓸 수 없습니다: \(text)")
+        }
+        return (AppPaths(base: base, eventsDirOverride: URL(fileURLWithPath: expanded, isDirectory: true)), nil)
+    }
+
+    /// Python의 os.path.expanduser와 같은 범위만 푼다: "~" 단독과 "~/..."만. "~user"는 풀지 않는다
+    /// (플러그인은 풀 수 있지만 그 경우 상대 경로처럼 보여 앱이 거절하므로, 문서에서 쓰지 말라고 안내한다).
+    static func expandHome(_ path: String, home: String) -> String {
+        if path == "~" { return home }
+        if path.hasPrefix("~/") { return home + String(path.dropFirst(1)) }
+        return path
     }
 
     public func eventsFile(runID: String) -> URL { eventsDir.appendingPathComponent("\(runID).jsonl") }

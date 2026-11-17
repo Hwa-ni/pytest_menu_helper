@@ -224,6 +224,12 @@ struct PopoverRootView: View {
                     .font(.caption).foregroundStyle(Color(nsColor: .systemOrange))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // 등록하지 않은 Python 환경의 터미널 실행 안내(6단계). 경고가 아니라 안내라 회색으로 보인다.
+            if let notice = state.terminalNotice {
+                Label(notice, systemImage: "terminal")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if state.projects.isEmpty {
                 emptyProjects(state)
             } else {

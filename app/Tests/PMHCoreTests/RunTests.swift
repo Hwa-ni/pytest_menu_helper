@@ -158,7 +158,7 @@ private func writeText(_ text: String, to url: URL) throws {
     private func check(_ report: CheckReport) -> EnvCheck {
         Interpreter.interpret(report: report, pythonPath: "/p", repoPath: "/repo")
     }
-    private func report(plugin: Bool = true, version: String? = "0.2.0", pytest: String? = "9.0") -> CheckReport {
+    private func report(plugin: Bool = true, version: String? = "0.3.0", pytest: String? = "9.0") -> CheckReport {
         CheckReport(pythonVersion: [3, 13, 1], pytestVersion: pytest, fastapiVersion: "0.1",
                     pluginInstalled: plugin, pluginVersion: version)
     }
@@ -190,7 +190,7 @@ private func writeText(_ text: String, to url: URL) throws {
         #expect(RunEligibility.reason(for: check(report(pytest: nil))) != nil)
         // FastAPI 누락만으로는 실행을 막지 않는다(경고).
         let noFastapi = CheckReport(pythonVersion: [3, 13, 1], pytestVersion: "9", fastapiVersion: nil,
-                                    pluginInstalled: true, pluginVersion: "0.2.0")
+                                    pluginInstalled: true, pluginVersion: "0.3.0")
         #expect(RunEligibility.reason(for: check(noFastapi)) == nil)
     }
 }
