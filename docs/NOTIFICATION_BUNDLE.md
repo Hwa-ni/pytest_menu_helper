@@ -32,7 +32,9 @@ cat ~/.pmh-build/out.txt
 | .app 번들, ad-hoc 서명, 바이너리를 직접 실행 | 번들 ID는 인식하지만 `Notifications are not allowed for this application`(UNErrorDomain 1), 상태 `notDetermined`. 직접 실행은 정식 앱 실행이 아니라 권한 요청이 처리되지 않음 |
 | .app 번들, ad-hoc 서명, `open`으로 실행 | 정상 실행. 권한 요청 결과 `granted=false`, `authorizationStatus=denied`, 같은 오류. `add()`는 호출되지 않음 |
 
-## 확인된 출력 (ad-hoc, `open` 실행)
+위 표와 아래 출력은 알림을 허용하기 전 첫 시험 기록이다. 허용한 뒤의 결과는 맨 위 "상태"에 있다.
+
+## 첫 시험 출력 (ad-hoc, `open` 실행, 알림 허용 전)
 
 ```
 bundleIdentifier=dev.yohwan.pytest-menu-helper.sample
@@ -42,11 +44,9 @@ authorizationStatus=denied
 
 ## 알려진 제한
 
-→ **현재까지 확정된 최소 조건**: Bundle ID가 있는 .app 번들 + 서명(ad-hoc 이상) + `open`으로 실행. 이 조건에서 앱이 알림 센터에 등록되고 권한 상태가 `denied`까지 나왔다. 알림 표시 자체는 이 세션에서 확인하지 못했다.
+→ **확정된 최소 조건**: Bundle ID가 있는 .app 번들 + 서명(ad-hoc 이상) + `open`으로 실행. 이 조건에서 사용자가 시스템 설정 > 알림에서 허용하자 알림이 실제로 표시됐다(2026-11-17).
 
-→ **권한 팝업이 보이지 않았다.** 첫 `open` 실행에서 곧바로 `denied`가 나왔다. 팝업이 자동으로 닫혔거나 이 터미널 세션에서 보이지 않았을 수 있다. 원인은 확인하지 못했다.
-
-→ **사용자 확인 필요**: 시스템 설정 > 알림에서 "pytest Menu Helper Sample"이 있는지, 허용으로 바꾼 뒤 샘플을 다시 실행하면 알림이 표시되는지 확인해야 한다. 허용 후에도 `add result=success`가 나오는지 같이 본다. 시스템 설정은 이 작업에서 바꾸지 않았다.
+→ **권한 팝업이 보이지 않았다.** 첫 `open` 실행에서 곧바로 `denied`가 나왔고, 사용자가 시스템 설정에서 직접 허용해야 했다. 팝업이 자동으로 닫혔거나 이 터미널 세션에서 보이지 않았을 수 있다. 원인은 확인하지 못했다. 8단계에서 첫 실행 때 권한 안내가 필요하다.
 
 → ad-hoc 서명은 빌드할 때마다 코드 서명 정보가 바뀌므로 macOS가 앱을 다른 앱으로 볼 수 있다. 안정적인 알림 권한 유지는 Developer ID 서명에서 확인해야 한다(미시험).
 

@@ -20,18 +20,38 @@ func infoItem(_ title: String) -> NSMenuItem {
     return item
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let store = ProjectStore()
     private var registry = Registry()
     private var loadWarning: String?
     private var checks: [String: EnvCheck] = [:] // 환경 id → 결과(없으면 검사 중)
-    /// pytest 실행 담당. 프로세스·파일 읽기·집계는 컨트롤러의 백그라운드 큐에서 하고,
-    /// 변경 알림만 메인 큐로 받아 메뉴를 갱신한다.
-    private lazy var controller = RunController { [weak self] snapshot in self?.runStateChanged(snapshot) }
+    /// 컨트롤러 알림을 받는 직렬 큐. 여기서 메인 런루프의 common 모드로 다시 넘긴다(runStateArrived 참고).
+    private let notifyQueue = DispatchQueue(label: "pmh.menu-notify")
+    /// pytest 실행 담당. 프로세스·파일 읽기·집계는 컨트롤러의 백그라운드 큐에서 한다.
+    /// 변경 알림은 notifyQueue로 받은 뒤 메뉴가 열려 있어도 처리되는 방식으로 메인 스레드에 넘긴다.
+    private lazy var controller = RunController(notifyQueue: notifyQueue) { [weak self] snapshot in
+        self?.runStateArrived(snapshot)
+    }
     private var runSnapshot = RunSnapshot(active: nil, results: [:])
     /// 지금 메뉴에 걸려 있는 진행 줄. 메뉴가 열려 있는 동안 제목만 바꾸려고 기억한다.
     private weak var progressItem: NSMenuItem?
+
+    /// 환경 하나의 메뉴 항목과 하위 메뉴. 실행 상태가 바뀌면 메뉴를 새로 만들지 않고 이 항목들을 그 자리에서 고친다.
+    /// 새로 만들면 안 되는 이유: 사용자가 보고 있는 열린 메뉴는 예전 객체라서, statusItem.menu를 바꿔 끼워도
+    /// 화면에는 반영되지 않는다. 그래서 끝난 실행이 계속 "실행 중"으로 보였다.
+    private struct EnvMenu {
+        let item: NSMenuItem
+        let sub: NSMenu
+        let env: PMHEnvironment
+        let project: Project
+    }
+    /// 환경 id → 지금 메뉴에 걸린 항목. rebuildMenu가 매번 새로 채운다.
+    private var envMenus: [String: EnvMenu] = [:]
+    /// 메뉴가 열려 있는지. 열려 있는 동안에는 메뉴 전체를 바꿔 끼우지 않는다.
+    private var menuIsOpen = false
+    /// 메뉴가 열려 있어 미뤄 둔 전체 다시 만들기가 있는지. 메뉴가 닫히면 처리한다.
+    private var rebuildPending = false
     private lazy var checker: EnvironmentChecker = {
         let repo = Bundle.main.object(forInfoDictionaryKey: "PMHRepoPath") as? String
         return EnvironmentChecker(repoPath: repo)
@@ -58,17 +78,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: pytest 실행 상태
 
-    /// 컨트롤러가 메인 큐로 알려 준 상태를 반영한다.
-    /// 진행 숫자만 바뀐 경우에는 열려 있는 메뉴의 줄만 고치고, 시작·종료·중지 같은 구조 변화는 메뉴를 다시 만든다.
+    /// 컨트롤러 알림(notifyQueue에서 호출됨)을 메인 스레드로 넘긴다.
+    /// DispatchQueue.main 대신 메인 런루프의 common 모드를 쓰는 이유: 메뉴가 열려 있는 동안 런루프는
+    /// 이벤트 추적 모드로 돌기 때문에, 기본 모드에만 걸리는 작업은 메뉴를 닫을 때까지 미뤄질 수 있다.
+    /// common 모드에는 추적 모드가 포함되어 메뉴가 열린 채로도 처리된다.
+    /// notifyQueue가 직렬이라 알림 순서는 그대로 유지된다.
+    private func runStateArrived(_ snapshot: RunSnapshot) {
+        let main = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(main, CFRunLoopMode.commonModes.rawValue) { [weak self] in
+            self?.runStateChanged(snapshot)
+        }
+        // PerformBlock은 런루프를 깨우지 않으므로 직접 깨운다. 빠뜨리면 다음 이벤트(마우스 이동 등)까지 기다린다.
+        CFRunLoopWakeUp(main)
+    }
+
+    /// 실행 상태를 메뉴에 반영한다(메인 스레드).
+    /// 진행 숫자만 바뀐 경우에는 진행 줄과 환경 제목만 고치고, 시작·종료·중지 같은 변화는
+    /// 각 환경 하위 메뉴의 내용을 그 자리에서 다시 채운다. 메뉴 전체를 바꿔 끼우지 않으므로 열린 메뉴에도 바로 보인다.
     private func runStateChanged(_ snapshot: RunSnapshot) {
         let old = runSnapshot
         runSnapshot = snapshot
         if let a = old.active, let b = snapshot.active, a.runID == b.runID, a.stopping == b.stopping,
            old.results == snapshot.results, let item = progressItem {
             item.title = b.phase.text
+            if let ref = envMenus[b.envID] { ref.item.title = environmentTitle(ref.env) }
             return
         }
-        rebuildMenu()
+        refreshRunSections()
+    }
+
+    /// 모든 환경 항목의 제목과 하위 메뉴 내용을 지금 상태로 다시 채운다(메뉴 객체는 그대로 둔다).
+    private func refreshRunSections() {
+        progressItem = nil // 새로 채우는 진행 줄이 다시 지정한다. 지우지 않으면 사라진 줄을 계속 고친다.
+        for ref in envMenus.values {
+            ref.item.title = environmentTitle(ref.env)
+            ref.sub.removeAllItems()
+            fillEnvironmentMenu(ref.sub, env: ref.env, project: ref.project)
+        }
+    }
+
+    // MARK: NSMenuDelegate (최상위 메뉴만)
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+    }
+
+    /// 메뉴가 닫히면 열려 있는 동안 미뤄 둔 전체 다시 만들기를 한다.
+    /// 메뉴 항목의 동작(예: 다시 검사)이 닫힘보다 먼저 오든 나중에 오든, 이 처리로 결국 한 번은 반영된다.
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        if rebuildPending {
+            rebuildPending = false
+            rebuildMenu()
+        }
     }
 
     /// 실행 버튼. 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
@@ -84,7 +146,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             image.size = NSSize(width: 18, height: 18)
             return image
         }
-        // SVG를 못 읽으면 기본 기호로 대신한다(앱은 계속 동작).
+        if let url = Bundle.main.url(forResource: "mascot-fox-menubar@2x", withExtension: "png"),
+           let image = NSImage(contentsOf: url), image.isValid {
+            image.size = NSSize(width: 18, height: 18)
+            return image
+        }
+        // 두 이미지 파일을 읽지 못하면 시스템 기호로 대신한다.
         let fallback = NSImage(systemSymbolName: "pawprint.fill", accessibilityDescription: "pytest Menu Helper")
             ?? NSImage(size: NSSize(width: 18, height: 18))
         fallback.isTemplate = true
@@ -93,8 +160,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 메뉴
 
+    /// 메뉴 전체를 새로 만들어 상태 아이콘에 건다.
+    /// 메뉴가 열려 있으면 바꿔 끼워도 화면에 보이지 않으므로, 실행 영역만 그 자리에서 고치고 전체는 닫힐 때로 미룬다.
     private func rebuildMenu() {
+        if menuIsOpen {
+            rebuildPending = true
+            refreshRunSections()
+            return
+        }
+        envMenus = [:]
+        progressItem = nil
         let menu = NSMenu()
+        menu.delegate = self
         if let w = loadWarning {
             menu.addItem(infoItem("⚠︎ " + w))
             menu.addItem(.separator())
@@ -129,21 +206,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func environmentItem(_ env: PMHEnvironment, in project: Project) -> NSMenuItem {
-        let check = checks[env.id]
+    /// 환경 항목 제목: 이름 · Python 버전 · 검사 상태, 실행 중이면 진행 상태를 덧붙인다.
+    private func environmentTitle(_ env: PMHEnvironment) -> String {
         let title: String
-        if let check = check {
+        if let check = checks[env.id] {
             let v = check.pythonVersionText.map { "Python \($0)" } ?? "Python -"
             title = "\(env.name) · \(v) · \(check.status.label)"
         } else {
             title = "\(env.name) · 검사 중…"
         }
-        let runningHere = runSnapshot.active?.envID == env.id ? runSnapshot.active : nil
-        let item = NSMenuItem(title: runningHere.map { "\(title) · \($0.phase.text)" } ?? title,
-                              action: nil, keyEquivalent: "")
+        guard let active = runSnapshot.active, active.envID == env.id else { return title }
+        return "\(title) · \(active.phase.text)"
+    }
+
+    /// 환경 항목과 하위 메뉴를 만들고, 실행 상태가 바뀔 때 고칠 수 있게 envMenus에 기억한다.
+    private func environmentItem(_ env: PMHEnvironment, in project: Project) -> NSMenuItem {
+        let item = NSMenuItem(title: environmentTitle(env), action: nil, keyEquivalent: "")
         let sub = NSMenu()
         // 자동 활성화를 끄지 않으면 "pytest 실행" 같은 항목의 비활성 지정이 무시되어 다시 켜진다.
         sub.autoenablesItems = false
+        fillEnvironmentMenu(sub, env: env, project: project)
+        item.submenu = sub
+        envMenus[env.id] = EnvMenu(item: item, sub: sub, env: env, project: project)
+        return item
+    }
+
+    /// 환경 하위 메뉴의 내용을 채운다. 처음 만들 때와 실행 상태가 바뀔 때(비운 뒤) 모두 이 함수를 쓴다.
+    /// 매개변수 sub: 비어 있는 하위 메뉴. env·project: 이 메뉴가 가리키는 환경과 그 프로젝트.
+    private func fillEnvironmentMenu(_ sub: NSMenu, env: PMHEnvironment, project: Project) {
+        let check = checks[env.id]
+        let runningHere = runSnapshot.active?.envID == env.id ? runSnapshot.active : nil
         sub.addItem(infoItem(env.pythonPath))
         if let report = check?.report {
             let pluginText = report.pluginInstalled ? "설치됨 \(report.pluginVersion ?? "(버전 불명)")" : "없음"
@@ -166,8 +258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rebuildMenu()
         })
         sub.addItem(ActionItem("환경 제거") { [weak self] in self?.removeEnvironment(env.id, from: project.id) })
-        item.submenu = sub
-        return item
     }
 
     /// 환경 하위 메뉴의 실행 영역: 실행/중지 버튼, 진행 줄, 마지막 결과 줄.
@@ -187,7 +277,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.runPytest(env, in: project)
             })
             if let reason = reason {
-                sub.addItem(infoItem("실행 불가: \(reason)"))
+                // 이유가 아래 문제 목록(조치 필요·오류 줄)과 같은 문장이면 두 번 보이지 않게 짧게 가리킨다.
+                // 목록에 없는 이유(검사 중 등)는 그대로 보여 준다. 빠뜨리면 실행이 왜 막혔는지 알 수 없다.
+                let listedBelow = check?.issues.contains { reason.contains($0.message) } ?? false
+                sub.addItem(infoItem(listedBelow ? "실행 불가: 아래 문제를 먼저 해결하세요." : "실행 불가: \(reason)"))
             } else if busy {
                 sub.addItem(infoItem("다른 환경의 실행이 끝날 때까지 기다리세요(동시에 1건만 실행)."))
             }

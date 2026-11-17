@@ -18,6 +18,7 @@ cp "$APP_DIR/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :PMHRepoPath string $REPO" "$APP/Contents/Info.plist"
 # 메뉴 아이콘 원본은 수정하지 않고 복사만 한다.
 cp "$REPO/assets/mascot-fox-menubar.svg" "$APP/Contents/Resources/"
+cp "$REPO/assets/mascot-fox-menubar@2x.png" "$APP/Contents/Resources/"
 codesign --force --sign - "$APP"
 echo "built: $APP"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature|flags" || true

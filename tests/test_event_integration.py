@@ -238,6 +238,28 @@ def test_pmh_run_id_uppercase_uuid_is_normalized(tmp_path):
     assert names == [f"{wanted.lower()}.jsonl"]
 
 
+def test_app_variables_are_not_inherited_by_nested_pytest(tmp_path):
+    """앱 변수(PMH_RUN_ID, PMH_ENV_ID)가 테스트 코드와 자식 프로세스에 남지 않는지 본다.
+
+    회귀 방지: 예전에는 테스트 안에서 pytest를 다시 실행하면 자식이 같은 실행 ID로
+    같은 파일에 이벤트를 섞어 써서 앱 집계가 틀어졌다. 값은 바깥 실행 기록에만 쓰여야 한다.
+    """
+    (tmp_path / "test_env.py").write_text(
+        "import os\n\n"
+        "def test_app_variables_removed():\n"
+        "    assert 'PMH_RUN_ID' not in os.environ\n"
+        "    assert 'PMH_ENV_ID' not in os.environ\n"
+    )
+    wanted = "3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60"
+    result = run_pytest(tmp_path, "test_env.py",
+                        extra_env={"PMH_RUN_ID": wanted, "PMH_ENV_ID": "env-a"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = read_events(tmp_path / ".isolated-events" / f"{wanted}.jsonl")
+    # 지우기 전에 읽은 값은 바깥 실행 기록에 그대로 남아야 한다.
+    assert assert_common(events, tmp_path) == wanted
+    assert events[0]["env"]["id"] == "env-a"
+
+
 def test_invalid_pmh_run_id_is_ignored(tmp_path):
     (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     folder = tmp_path / ".isolated-events"

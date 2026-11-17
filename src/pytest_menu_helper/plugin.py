@@ -30,10 +30,28 @@ def events_dir() -> Path:
     return Path(override) if override else DEFAULT_EVENTS_DIR
 
 
-def _requested_run_id() -> str | None:
-    """Run ID chosen by the app (PMH_RUN_ID). Anything but a canonical UUID is ignored,
-    because the value becomes a file name."""
-    value = os.environ.get("PMH_RUN_ID")
+def _take_app_variable(name: str) -> str | None:
+    """앱이 이번 실행에만 넘긴 환경변수를 읽고 os.environ에서 지운다.
+
+    매개변수 name: 읽을 변수 이름(PMH_RUN_ID, PMH_ENV_ID).
+    반환값: 변수 값, 없으면 None.
+
+    지우는 이유: 테스트가 subprocess로 pytest를 또 실행하면 자식이 os.environ을 물려받는다.
+    그러면 자식 pytest가 바깥 실행과 같은 실행 ID로 같은 이벤트 파일에 섞여 쓰고,
+    앱 집계가 틀어진다(이 저장소 테스트가 앱에서 33개 통과 대신 29 통과 4 실패로 나왔다).
+    주의: 수집기를 만들 때 한 번만 불러야 한다. 지운 뒤에는 다시 읽어도 None이다.
+    xdist 워커는 이 값이 필요 없으므로(컨트롤러만 기록) 미리 지워도 문제없다.
+    """
+    return os.environ.pop(name, None)
+
+
+def _requested_run_id(value: str | None) -> str | None:
+    """앱이 정한 실행 ID(PMH_RUN_ID 값)를 검증한다.
+
+    매개변수 value: _take_app_variable("PMH_RUN_ID")로 꺼낸 값.
+    반환값: 정규형 UUID(소문자) 문자열, 값이 없거나 정규형이 아니면 None.
+    값이 그대로 파일 이름이 되므로 경로 조작(../)이나 다른 UUID 표기는 모두 무시한다.
+    """
     if not value:
         return None
     try:
@@ -51,11 +69,16 @@ def _plugin_version() -> str | None:
         return None
 
 
-def _environment() -> dict[str, Any]:
+def _environment(env_id: str | None) -> dict[str, Any]:
+    """session_start 이벤트에 넣을 환경 정보를 만든다.
+
+    매개변수 env_id: 앱이 넘긴 환경 id(PMH_ENV_ID). 수집기 생성 때 미리 꺼내 둔 값이다.
+    반환값: id, 인터프리터 경로, Python·pytest·플러그인 버전 사전.
+    """
     # Name and version alone do not identify an environment; the prefix path does.
     prefix = os.path.realpath(sys.prefix)
     return {
-        "id": os.environ.get("PMH_ENV_ID") or hashlib.sha256(prefix.encode()).hexdigest()[:12],
+        "id": env_id or hashlib.sha256(prefix.encode()).hexdigest()[:12],
         "python_path": os.path.realpath(sys.executable),
         "python_version": platform.python_version(),
         "pytest_version": pytest.__version__,
@@ -83,7 +106,9 @@ class _Collector:
     def __init__(self, config: pytest.Config, path: str | None) -> None:
         self.config = config
         self.root = Path(config.rootpath).resolve()
-        self.run_id = _requested_run_id() or str(uuid.uuid4())
+        # 앱 변수는 여기서 한 번에 꺼내 지운다. 자식 pytest가 물려받지 않게 하려는 것이다.
+        self.env_id = _take_app_variable("PMH_ENV_ID")
+        self.run_id = _requested_run_id(_take_app_variable("PMH_RUN_ID")) or str(uuid.uuid4())
         self.occurrences: dict[str, int] = {}
         self.seq = 0
         self.stream = None
@@ -154,7 +179,7 @@ class _Collector:
 
     def pytest_sessionstart(self, session: pytest.Session) -> None:
         self._write(
-            "session_start", env=_environment(),
+            "session_start", env=_environment(self.env_id),
             args=[str(arg) for arg in self.config.invocation_params.args],
         )
 

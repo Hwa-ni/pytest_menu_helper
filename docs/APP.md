@@ -1,7 +1,7 @@
 # macOS 메뉴 막대 앱 (3~4단계)
 
 상태: 3단계 **완료**(로직은 자동 테스트로, 메뉴 표시·폴더 선택 창·환경 추가 동선은 사용자가 직접 확인, 2026-11-17).
-4단계(pytest 실행과 결과 연결)는 **로직 구현·자동 검증 완료, 화면 동작은 사용자 확인 대기**(아래 "4단계" 절).
+4단계(pytest 실행과 결과 연결)는 **완료**(로직은 자동 테스트로, 실행·실행 중 메뉴 갱신·중지·결과 문구는 사용자가 직접 확인, 2026-11-17). 플러그인 없는 환경에서 실행 버튼이 꺼지는 것도 확인했다.
 
 ## 구조
 
@@ -10,7 +10,7 @@
 - `app/Sources/PMHApp`: AppKit UI만(메뉴 막대 아이콘, 메뉴, 폴더·파일 선택 창).
 - `app/Sources/pmh-check`: 같은 PMHCore로 환경을 검사해 출력하는 개발용 명령줄 도구.
 - `app/Sources/pmh-run`: 같은 PMHCore의 실행 로직(`RunController`)을 화면 없이 돌려 보는 개발용 명령줄 도구(통합 검증용).
-- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(49개).
+- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(51개).
 
 ## 빌드·실행
 
@@ -36,7 +36,7 @@ app/test.sh                       # Swift 테스트 (아래 도구 문제 우회
 
 ## 등록 파일
 
-`~/Library/Application Support/pytest-menu-helper/projects.json` (앱이 홈에 쓰는 유일한 파일).
+`~/Library/Application Support/pytest-menu-helper/projects.json`. 앱이 홈에 쓰는 것은 이 파일과 4단계의 `logs/<run_id>.log`뿐이다(`events/`는 플러그인이 쓴다).
 `{version, projects:[{id(UUID), path, environments:[{id, name, python_path}]}]}`. 환경 `id`는 앱이 만들며 실행 때 `PMH_ENV_ID`로 넘길 값이다.
 읽기 실패·깨진 파일이면 앱은 죽지 않고 메뉴 맨 위에 안내를 띄우고 빈 목록으로 시작한다. 깨진 파일은 `projects.json.broken`으로 옮겨 보존한다.
 
@@ -65,7 +65,8 @@ Python 후보: `<프로젝트>/.venv/bin/python`, `~/.venvs/*/bin/python`, 그 �
 ### 실행 방식
 
 - 앱이 UUID(소문자)를 만들어 `PMH_RUN_ID`로 넘기고, 선택한 환경의 `<python> -m pytest`를 **프로젝트 폴더를 작업 폴더로** 실행한다. 앱이 실행하는 것은 등록한 환경의 pytest와 그 환경의 집계 호출뿐이다.
-- 자식 환경변수: 사용자 환경을 그대로 쓰되 `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, `PYTEST_MENU_DISABLE`은 제거하고 `PMH_ENV_ID`(환경 id), `PMH_RUN_ID`, `PYTEST_MENU_EVENTS_DIR`(앱이 읽는 이벤트 폴더)를 넣는다.
+- 자식 환경변수: 앱 프로세스의 환경을 그대로 쓰되 `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, `PYTEST_MENU_DISABLE`은 제거하고 `PMH_ENV_ID`(환경 id), `PMH_RUN_ID`, `PYTEST_MENU_EVENTS_DIR`(앱이 읽는 이벤트 폴더)를 넣는다. 플러그인은 `PMH_ENV_ID`·`PMH_RUN_ID`를 읽은 뒤 지워서 테스트 안에서 다시 실행한 pytest가 물려받지 않게 한다.
+- **주의: 앱 프로세스의 환경은 터미널 환경과 다르다.** `open`으로 띄운 앱은 셸 설정(`.zshrc`의 변수, PATH)을 받지 않고 가상환경도 활성화되지 않는다. 환경변수나 PATH의 외부 명령에 의존하는 테스트는 앱에서만 실패할 수 있다.
 - pytest 출력(표준 출력·오류)은 파이프가 아니라 `~/Library/Application Support/pytest-menu-helper/logs/<run_id>.log`(0600) 파일로 보낸다. 읽는 쪽이 없어도 자식이 멈추지 않는다.
 - 이벤트는 `events/<run_id>.jsonl`을 0.25초마다 읽는다(상세는 `docs/EVENTS.md`). FSEvents는 6단계 몫이라 쓰지 않는다.
 - 스레드: Process 실행, 파일 읽기, 집계 호출은 `RunController`의 백그라운드 큐에서 하고 메뉴 갱신만 메인 스레드에서 한다. 진행 숫자만 바뀔 때는 열려 있는 메뉴의 줄만 고쳐 쓴다.
@@ -102,7 +103,7 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 
 ### 사용자 확인 필요(화면 동작)
 
-자동으로 확인하지 못한 항목이다. 느린 샘플 프로젝트: `~/.pmh-build/slow-sample/`(저장소 밖, 테스트 5개, 약 10초).
+자동으로 확인하지 못한 항목이다. 1~6번 모두 사용자가 확인했다(2026-11-17, 1~5번은 메뉴 갱신 수정 후 느린 샘플로, 6번은 `pmh-noplugin` 화면으로). 느린 샘플 프로젝트: `~/.pmh-build/slow-sample/`(저장소 밖, 테스트 5개, 약 10초).
 1. 환경 하위 메뉴의 "pytest 실행"이 보이고 누르면 실행되는가.
 2. 실행 중 메뉴를 열었을 때 앱이 멈추지 않고 반응하는가(느린 샘플 사용). 진행 줄이 "수집 대기" → "실행 중 n/5"로 바뀌는가.
 3. 실행 중 모든 환경의 "pytest 실행"이 꺼져 있는가.
@@ -114,7 +115,7 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 
 - 메뉴 표시·선택 창 동작은 자동화하지 못했다(사용자 확인 필요).
 - ad-hoc 서명이라 다른 Mac 배포·알림 권한 유지는 미확인(`docs/NOTIFICATION_BUNDLE.md`).
-- 열려 있는 메뉴는 구조 변화(시작·종료·중지)를 즉시 반영하지 못할 수 있다(닫았다 다시 열면 반영). 진행 줄 제목만 열린 상태에서 갱신한다.
+- 열려 있는 메뉴도 실행 상태(진행 줄, 종료, 중지, 마지막 결과)를 그 자리에서 갱신한다. 메뉴 전체를 바꿔 끼우면 열린 메뉴에는 보이지 않기 때문에, 환경 하위 메뉴의 내용만 다시 채운다. 상태 알림은 메인 런루프의 common 모드로 넘겨 메뉴가 열린 동안에도 처리한다. 프로젝트·환경 추가·제거나 검사 결과처럼 메뉴 구조가 바뀌는 변화는 메뉴를 닫을 때 반영한다(2026-11-17 수정, 느린 샘플로 사용자 확인).
 - 한 번에 실행 1건만 가능하다. 여러 환경 동시 실행은 9단계.
 - 앱이 강제 종료되면 이미 시작한 pytest는 남을 수 있다(정상 종료 때만 SIGINT를 보낸다).
 - 앱 시작 때와 환경 추가·다시 검사 때만 검사한다. 이후 환경이 바뀌어도 자동 감지하지 않는다.
