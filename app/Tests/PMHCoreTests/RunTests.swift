@@ -285,6 +285,8 @@ private func waitUntil(_ seconds: Double = 10, _ cond: () -> Bool) async -> Bool
         }
         #expect(s.verdict == "failed" && s.title == "실패")
         #expect(RunOutcome.finished(s).title == "실패 · 통과 1 · 실패 1")
+        // 팝오버의 소요 시간 링이 쓰는 값. 프로세스를 띄운 뒤 끝날 때까지라 0 이상이어야 한다.
+        #expect((c.snapshot.elapsed["env1"] ?? -1) >= 0)
         let log = try String(contentsOf: fx.paths.logFile(runID: runID), encoding: .utf8)
         #expect(log.contains("disable=[] menu=[]"))
         #expect(log.contains("envid=[env1]"))

@@ -46,6 +46,8 @@ public final class RunController {
         var timer: DispatchSourceTimer?
         var stopRequested = false
         var logHandle: FileHandle?
+        /// pytest 프로세스를 띄운 시각. 소요 시간 계산에 쓴다. 띄우기 전에는 nil이다.
+        var launchedAt: Date?
         init(runID: String, eventsFile: URL) {
             self.runID = runID
             tail = EventTail(url: eventsFile)
@@ -82,7 +84,7 @@ public final class RunController {
         lock.lock()
         if state.active != nil { lock.unlock(); return .alreadyRunning }
         state.active = ActiveRun(runID: runID, envID: envID, projectPath: projectPath,
-                                 phase: .waitingForEvents, stopping: false)
+                                 phase: .waitingForEvents, stopping: false, startedAt: Date())
         lock.unlock()
         publish()
         work.async { self.launch(runID: runID, envID: envID, pythonPath: pythonPath, projectPath: projectPath) }
@@ -197,12 +199,14 @@ public final class RunController {
                 throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: "앱이 종료되는 중입니다."])
             }
             do { try p.run() } catch { lock.unlock(); throw error }
+            ctx.launchedAt = Date()
             runningProcess = p
             lock.unlock()
         } catch {
             try? ctx.logHandle?.close()
             context = nil
-            complete(envID: envID, outcome: .launchFailed(message: "실행하지 못했습니다: \(error.localizedDescription)"), runID: runID)
+            complete(envID: envID, outcome: .launchFailed(message: "실행하지 못했습니다: \(error.localizedDescription)"),
+                     runID: runID, elapsed: nil)
             return
         }
         let timer = DispatchSource.makeTimerSource(queue: work)
@@ -243,6 +247,8 @@ public final class RunController {
         lock.lock()
         if runningProcess === ctx.process { runningProcess = nil }
         lock.unlock()
+        // 소요 시간은 집계 호출 전에 잰다. 집계(최대 30초)는 pytest 실행 시간이 아니기 때문이다.
+        let elapsed = ctx.launchedAt.map { Date().timeIntervalSince($0) }
         ctx.timer?.cancel()
         ctx.timer = nil
         poll(ctx) // 종료 직전에 쓰인 마지막 이벤트까지 읽는다.
@@ -263,7 +269,7 @@ public final class RunController {
             outcome = aggregate(pythonPath: pythonPath, runID: ctx.runID)
         }
         context = nil
-        complete(envID: envID, outcome: outcome, runID: ctx.runID)
+        complete(envID: envID, outcome: outcome, runID: ctx.runID, elapsed: elapsed)
     }
 
     /// 판정은 Python 집계기를 1번 호출해 받는다. 실패는 판정이 아니라 오류로 돌려준다.
@@ -284,9 +290,12 @@ public final class RunController {
     }
 
     /// 결과를 저장하고 실행 중 표시를 지운 뒤, 오래된 파일을 정리하고 알린다.
-    private func complete(envID: String, outcome: RunOutcome, runID: String) {
+    /// 매개변수 elapsed: pytest 프로세스의 실행 시간(초). 시작하지 못했으면 nil이고, 이때는 이전 값도 지운다
+    /// (지우지 않으면 새 결과 옆에 지난 실행의 시간이 보인다).
+    private func complete(envID: String, outcome: RunOutcome, runID: String, elapsed: TimeInterval?) {
         lock.lock()
         state.results[envID] = outcome
+        state.elapsed[envID] = elapsed
         state.active = nil
         lock.unlock()
         FileCleaner.pruneAll(paths, keep: keep, protectingRunID: runID)

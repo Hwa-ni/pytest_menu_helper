@@ -1,12 +1,16 @@
 // AppDelegate.swift
-// 메뉴 막대 앱의 본체. 프로젝트·환경 등록 메뉴를 만들고, pytest 실행 상태를 메뉴에 보여 준다.
+// 메뉴 막대 앱의 본체. 프로젝트·환경 등록 메뉴를 만들고, pytest 실행 상태를 메뉴와 팝오버에 보여 준다.
 // 입력: 등록 파일(ProjectStore), 환경 검사 결과(EnvironmentChecker), 실행 상태 알림(RunController).
-// 출력: 상태 막대 메뉴, 등록 파일 저장, pytest 실행·중지 요청.
+// 출력: 상태 막대 메뉴, 결과 팝오버, 등록 파일 저장, pytest 실행·중지 요청.
+// 아이콘 왼쪽 클릭은 결과 팝오버(5단계, PopoverView.swift)를, 오른쪽 클릭(또는 control+클릭)과
+// 팝오버의 ⚙ 버튼은 기존 메뉴를 연다. statusItem.menu를 고정으로 걸지 않는 이유: 걸어 두면 왼쪽 클릭도
+// 메뉴를 열어 버려 팝오버를 띄울 수 없다. 그래서 메뉴는 열 때만 잠깐 걸었다가 바로 뗀다(showMenu).
 // 실행 중인 환경과 그 환경이 속한 프로젝트는 제거할 수 없다. 제거하면 메뉴에서 "중지"가 사라지고
 // 그 실행이 끝날 때까지 다른 환경의 실행 버튼도 꺼진 채 남기 때문이다.
 
 import AppKit
 import PMHCore
+import SwiftUI
 
 /// 클로저를 실행하는 메뉴 항목.
 final class ActionItem: NSMenuItem {
@@ -27,8 +31,16 @@ func infoItem(_ title: String) -> NSMenuItem {
     return item
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
+    /// 지금 만들어 둔 메뉴. 오른쪽 클릭이나 ⚙ 버튼으로 열 때만 statusItem에 잠깐 건다.
+    private var menu: NSMenu?
+    /// 왼쪽 클릭으로 여는 결과 팝오버. 바깥을 누르면 닫힌다(.transient).
+    private let popover = NSPopover()
+    /// 팝오버 화면의 상태. 등록·검사·실행 상태가 바뀔 때마다 pushPopoverState로 넣는다.
+    private let popoverModel = PopoverViewModel()
+    /// 팝오버가 마지막으로 닫힌 시각. 아이콘을 눌러 닫을 때 바로 다시 열리는 것을 막는 데 쓴다(togglePopover 참고).
+    private var popoverClosedAt: Date?
     private let store = ProjectStore()
     private var registry = Registry()
     private var loadWarning: String?
@@ -80,6 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = menuBarImage()
         statusItem.button?.toolTip = "pytest Menu Helper"
+        // 왼쪽·오른쪽 클릭을 모두 이 동작으로 받아 statusItemClicked에서 나눈다.
+        // sendAction(on:)을 빼면 기본값(왼쪽 버튼만)이라 오른쪽 클릭으로 메뉴를 열 수 없다.
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusItemClicked(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        setupPopover()
 
         let outcome = store.load()
         registry = outcome.registry
@@ -121,6 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func runStateChanged(_ snapshot: RunSnapshot) {
         let old = runSnapshot
         runSnapshot = snapshot
+        // 팝오버는 메뉴와 달리 바뀐 값만 넣으면 SwiftUI가 다시 그린다. 진행 숫자만 바뀐 경우도 같다.
+        pushPopoverState()
         if let a = old.active, let b = snapshot.active, a.runID == b.runID, a.stopping == b.stopping,
            old.results == snapshot.results, let item = progressItem {
             item.title = b.phase.text
@@ -128,6 +148,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         refreshRunSections()
+    }
+
+    // MARK: 팝오버
+
+    /// 팝오버와 그 안의 SwiftUI 화면을 준비하고, 화면의 동작을 앱 동작에 잇는다.
+    private func setupPopover() {
+        popoverModel.onRun = { [weak self] envID in self?.runPytest(envID: envID) }
+        popoverModel.onStop = { [weak self] in self?.controller.stop() }
+        popoverModel.onSettings = { [weak self] in
+            // 팝오버를 먼저 닫고 다음 차례에 메뉴를 연다. 같은 차례에 열면 닫히는 팝오버와 메뉴 추적이 겹친다.
+            self?.popover.performClose(nil)
+            DispatchQueue.main.async { self?.showMenu() }
+        }
+        let hosting = NSHostingController(rootView: PopoverRootView(model: popoverModel))
+        // 팝오버 크기를 SwiftUI 내용 크기에 맞춘다. 실패 목록을 펼치면 팝오버도 함께 커진다(상한은 화면 쪽 maxHeight).
+        hosting.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hosting
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        pushPopoverState()
+    }
+
+    /// 팝오버 화면에 지금 상태를 넣는다(메인 스레드). 등록·검사·실행 상태가 바뀌는 모든 곳에서 부른다.
+    private func pushPopoverState() {
+        popoverModel.update(registry: registry, checks: checks, snapshot: runSnapshot)
+    }
+
+    /// 아이콘 클릭. 오른쪽 클릭이나 control+왼쪽 클릭이면 메뉴, 그 밖의 왼쪽 클릭이면 팝오버.
+    @objc private func statusItemClicked(_ sender: Any?) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    /// 팝오버를 열거나 닫는다.
+    /// 열린 팝오버에서 아이콘을 누르면 .transient 동작이 마우스를 누르는 순간 먼저 닫아 버리고,
+    /// 마우스를 뗄 때 이 함수가 불려 다시 열린다. 방금(0.3초 안) 닫혔으면 다시 열지 않아 이 깜빡임을 막는다.
+    private func togglePopover() {
+        if popover.isShown { popover.performClose(nil); return }
+        if let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3 { return }
+        guard let button = statusItem.button else { return }
+        popoverModel.resetSelection() // 열 때마다 기본 선택(실행 중인 환경)부터 보여 준다
+        pushPopoverState()
+        // Dock 아이콘이 없는 앱(LSUIElement)은 활성화하지 않으면 팝오버 창이 키 창이 되지 못해
+        // 텍스트 선택·복사가 되지 않고 바깥 클릭으로 닫히지 않을 때가 있다.
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popoverClosedAt = Date()
+    }
+
+    /// 기존 메뉴를 아이콘 아래에 연다. 메뉴를 잠깐 걸고 버튼을 누른 것처럼 한 뒤 바로 뗀다.
+    /// performClick은 메뉴가 닫힐 때까지 돌아오지 않는다(메뉴 추적). 돌아온 뒤 떼어야 다음 왼쪽 클릭이 다시 팝오버를 연다.
+    /// 메뉴가 열린 동안의 실시간 갱신(menuWillOpen·menuDidClose, common 모드 알림)은 예전과 같다.
+    private func showMenu() {
+        if popover.isShown { popover.performClose(nil) }
+        guard let menu = menu, let button = statusItem.button else { return }
+        statusItem.menu = menu
+        button.performClick(nil)
+        statusItem.menu = nil
     }
 
     /// 모든 환경 항목의 제목과 하위 메뉴 내용을 지금 상태로 다시 채운다(메뉴 객체는 그대로 둔다).
@@ -166,6 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 메뉴 항목의 동작(예: 다시 검사)이 닫힘보다 먼저 오든 나중에 오든, 이 처리로 결국 한 번은 반영된다.
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
+        // performClick이 메뉴 추적 전에 돌아오는 경우에도 메뉴가 남아 왼쪽 클릭을 가로채지 않게 여기서도 뗀다.
+        statusItem.menu = nil
         if rebuildPending {
             rebuildPending = false
             rebuildMenu()
@@ -175,6 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 실행 버튼. 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
     private func runPytest(_ env: PMHEnvironment, in project: Project) {
         _ = controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path)
+    }
+
+    /// 팝오버의 ▶. 환경 id로 등록 정보를 찾아 실행한다.
+    /// 화면에서 버튼을 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때를 대비해 실행 가능 여부를 여기서도 확인한다.
+    /// 등록에서 사라진 환경이거나 실행할 수 없는 환경이면 아무것도 하지 않는다.
+    private func runPytest(envID: String) {
+        for project in registry.projects {
+            guard let env = project.environments.first(where: { $0.id == envID }) else { continue }
+            guard let check = checks[envID], RunEligibility.reason(for: check) == nil else { NSSound.beep(); return }
+            runPytest(env, in: project)
+            return
+        }
     }
 
     // MARK: 아이콘
@@ -202,6 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 메뉴 전체를 새로 만들어 상태 아이콘에 건다.
     /// 메뉴가 열려 있으면 바꿔 끼워도 화면에 보이지 않으므로, 실행 영역만 그 자리에서 고치고 전체는 닫힐 때로 미룬다.
     private func rebuildMenu() {
+        // 팝오버는 메뉴가 열려 있든 아니든 바로 갱신한다(메뉴처럼 바꿔 끼울 때의 제약이 없다).
+        pushPopoverState()
         if menuIsOpen {
             rebuildPending = true
             refreshRunSections()
@@ -221,7 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for project in registry.projects { menu.addItem(projectItem(project)) }
         menu.addItem(.separator())
         menu.addItem(ActionItem("종료") { NSApp.terminate(nil) })
-        statusItem.menu = menu
+        // 아이콘에 고정으로 걸지 않는다(왼쪽 클릭은 팝오버). 열 때 showMenu가 잠깐 건다.
+        self.menu = menu
     }
 
     private func projectItem(_ project: Project) -> NSMenuItem {
