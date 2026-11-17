@@ -47,27 +47,27 @@
 - pytest 플러그인: 실행 시작, 테스트 단계별 결과, 수집 오류, 중단과 종료를 JSONL로 기록
 - 결과 집계: 테스트별 성공·실패·오류·skip·xfail·xpass 건수와 실행 상태 판정
 - 미완료 처리: 종료 기록 누락이나 일부 단계 누락을 전체 성공으로 처리하지 않음
-- 검증: Python 3.13.9, pytest 8.4.2에서 테스트 20개 통과
+- 자동 로드: 패키지를 설치하면 `pytest11` entry point로 모든 pytest 실행을 기록합니다. 실행마다 파일 1개를 `~/Library/Application Support/pytest-menu-helper/events/`에 씁니다(`PYTEST_MENU_DISABLE=1`로 끔).
+- 검증: Python 3.9.6(pytest 8.4.2), 3.12.16·3.13.18(pytest 9.2.0)에서 각각 테스트 27개 통과
 
 현재는 **단일 pytest 실행**을 대상으로 하며 플러그인과 출력 파일을 명시해야 합니다. 가상환경 식별 정보와 동시 실행 집계는 아직 없습니다. `-k` 등으로 선택한 테스트가 통과한 것은 이번 선택 범위의 성공을 의미합니다.
 
 ## 대상 환경과 구현 방향
 
-- 대상: macOS, Python 3.12 이상, FastAPI 프로젝트와 pytest
+- 대상: macOS, Python 3.9 이상, FastAPI 프로젝트와 pytest 8.4 이상
 - 결과 수집·집계: Python pytest 플러그인
 - macOS 앱: Swift와 AppKit을 우선 후보로 계획
 
-Python 3.12 자체와 macOS 앱의 실제 화면·알림은 아직 검증하지 않았습니다. 다른 터미널의 자동 감지도 환경별 플러그인 설치·활성화와 실제 터미널 검증이 필요합니다.
+macOS 앱의 실제 화면·알림은 아직 검증하지 않았습니다. 다른 터미널의 자동 감지도 환경별 플러그인 설치·활성화와 실제 터미널 검증이 필요합니다.
 
 ## 개발 환경 설정
 
-Python 3.12 이상의 인터프리터로 저장소 루트에서 실행합니다.
+Python 3.9 이상의 인터프리터로 저장소 루트에서 실행합니다. 시스템 Python을 바꾸지 않도록 [uv](https://docs.astral.sh/uv/)로 가상환경을 만드는 방식을 권장합니다.
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-python -m pytest
+uv venv --python 3.13 ~/.venvs/pmh-3.13
+uv pip install --python ~/.venvs/pmh-3.13/bin/python -e '.[dev]'
+~/.venvs/pmh-3.13/bin/python -m pytest
 ```
 
 기본 테스트 실행은 수집기와 집계기의 검증 테스트를 실행합니다. 의도적으로 실패하는 샘플은 기본 테스트 범위에서 제외되어 있습니다.

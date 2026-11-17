@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 190" role="img" aria-labelledby="title desc">
+  <title id="title">pytest Menu Helper fox mascot, failed test</title>
+  <desc id="desc">A relaxed side-view fox lies on its belly with its muzzle resting on the floor.</desc>
+  <style>
+    .fox { animation: flop 480ms cubic-bezier(.35, .05, .45, 1) 1 both; transform-box: view-box; transform-origin: 160px 155px; }
+    @keyframes flop {
+      0% { transform: translateY(-9px) rotate(-2deg); }
+      62% { transform: translateY(2px) rotate(.7deg); }
+      100% { transform: translateY(0) rotate(0); }
+    }
+    @media (prefers-reduced-motion: reduce) { .fox { animation: none; } }
+  </style>
+  <ellipse cx="160" cy="160" rx="127" ry="4" fill="#563C39" opacity=".12"/>
+  <path d="M15 156h290" fill="none" stroke="#B9A69B" stroke-width="2" opacity=".65"/>
+  <g class="fox" stroke="#563C39" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Tail -->
+    <path fill="#E98545" d="M243 99c17-16 40-17 50-2 10 14 2 31-14 36-14 4-28-4-39-16l-12-10z"/>
+    <path fill="#FFF0D7" stroke-width="4" d="M273 90c10 1 17 8 17 16 0 7-5 13-12 15-1-11-5-21-13-28z"/>
+    <!-- Relaxed body and folded legs -->
+    <path fill="#D96F3C" d="M218 119c11 5 16 13 11 21l-15 13h-31c-6 0-8-7-3-11l22-20z"/>
+    <path fill="#563C39" stroke-width="4" d="M185 148h35c6 0 9 3 9 7v2h-43c-6 0-7-5-1-9z"/>
+    <path fill="#E98545" d="M119 87c33-17 88-15 120 2 17 9 23 23 17 38-6 14-23 19-44 17l-92-6c-18-1-27-10-25-25 1-11 9-20 24-26z"/>
+    <path fill="#FFF0D7" stroke-width="4.5" d="M130 126c29 8 69 10 105 4-8 13-27 17-48 15l-44-4c-14-1-20-8-17-15z"/>
+    <path fill="#D96F3C" d="M140 101c-8 12-18 22-32 31l-18 13 15 3 28-12 17-18z"/>
+    <path fill="#563C39" stroke-width="4" d="M87 147c10-3 20-2 27 3 4 3 4 7-1 9H79c-6 0-8-5-3-8z"/>
+    <!-- Rounded side-profile head, one ear and one eye -->
+    <path fill="#E98545" d="M92 83l9-49c2-10 10-12 15-2l19 42c15 3 25 14 25 31 0 18-15 31-36 35-11 10-29 15-52 15H50c-9 0-13-6-8-12 5-7 18-12 28-21 12-11 16-26 12-39z"/>
+    <path fill="#F5B274" stroke-width="4" d="m103 42 3 31 18 0z"/>
+    <path fill="#FFF0D7" stroke-width="4" d="M79 113c-14 9-26 20-36 30-5 5-2 10 6 10 19 0 39-7 53-17 9-7 14-14 14-22-11-5-24-5-37-1z"/>
+    <ellipse cx="96" cy="91" rx="4.5" ry="5.5" fill="#563C39" stroke="none"/>
+    <circle cx="41" cy="152" r="4.5" fill="#563C39" stroke="none"/>
+    <path d="M45 154c7 3 13 2 19-2" fill="none" stroke-width="3.5"/>
+    <!-- Scarf -->
+    <path fill="#65CBB4" stroke-width="4.5" d="M137 81c10 4 20 4 29 1l3 11c-10 6-22 6-34 1z"/>
+    <path fill="#65CBB4" stroke-width="4" d="m142 92 1 20 12-7 9 9 2-23z"/>
+  </g>
+</svg>

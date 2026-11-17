@@ -1,10 +1,20 @@
-# pytest 이벤트 형식 v1
+# pytest 이벤트 형식 v2
 
-`-p pytest_menu_helper.plugin --menu-events PATH`를 지정하면 UTF-8 JSONL 파일에 한 줄당 이벤트 하나를 기록합니다. 옵션을 생략하면 수집기를 활성화하지 않습니다. 같은 파일은 덮어쓰지 않고 이어서 기록합니다.
+## 저장 위치와 로드 방식
+
+- 플러그인은 `pytest11` entry point로 설치된 환경의 모든 pytest 실행에서 자동 로드됩니다. 등록하지 않은 프로젝트의 실행도 기록합니다. 앱이 `project_root`로 걸러서 보여줍니다.
+- 기본: `~/Library/Application Support/pytest-menu-helper/events/<run_id>.jsonl`. 실행 1번이 파일 1개이며 폴더 권한은 0700입니다. `PYTEST_MENU_EVENTS_DIR`로 폴더를 바꿀 수 있습니다(테스트·개발용).
+- `--menu-events PATH`를 주면 그 파일에 이어서 기록합니다(기존 방식).
+- `PYTEST_MENU_DISABLE=1`이면 기록하지 않습니다. xdist 워커 프로세스와 `--help`는 기록하지 않습니다.
+- 환경 식별자는 앱이 `PMH_ENV_ID`로 지정하고, 없으면 `sys.prefix` 실제 경로의 SHA-256 앞 12자리를 씁니다.
+- 파일 정리(개수 상한)는 앱 단계에서 구현합니다. 현재는 정리하지 않습니다.
+
+UTF-8 JSONL 파일에 한 줄당 이벤트 하나를 기록합니다. 같은 파일은 덮어쓰지 않고 이어서 기록합니다.
 
 ## 공통 필드
 
-- `schema_version`: 정수 `1`
+- `schema_version`: 정수 `2`. 집계기는 v1 파일도 읽습니다(없는 필드는 `null`).
+- `seq`: 실행 안에서 1부터 늘어나는 이벤트 순번. v1에는 없습니다.
 - `event`: 이벤트 종류
 - `run_id`: 실행마다 생성하는 UUID 문자열. 같은 pytest 실행의 모든 이벤트가 공유합니다.
 - `project_root`: pytest가 결정한 프로젝트 루트의 절대 경로
@@ -14,7 +24,14 @@
 
 ### session_start
 
-pytest 세션 시작입니다. 공통 필드만 기록합니다.
+pytest 세션 시작입니다. v2는 아래 필드를 더합니다.
+
+- `env`: `{id, python_path, python_version, pytest_version, plugin_version}`. `plugin_version`은 설치 정보가 없으면 `null`
+- `args`: pytest 실행 인수 문자열 목록(`-k` 등 선택 조건 확인용)
+
+### session_collected
+
+v2에서 추가했습니다. 수집이 끝난 직후 `nodeids`에 수집된 전체 테스트 ID 목록을 기록합니다. 수집 오류로 수집이 끝나지 않으면 없을 수 있습니다. 집계기는 실행당 1건만 허용합니다.
 
 ### test_report
 
@@ -41,7 +58,7 @@ pytest 세션 시작입니다. 공통 필드만 기록합니다.
 
 ### session_interrupted
 
-pytest가 `KeyboardInterrupt`를 감지한 경우 기록합니다. 이전 이벤트에는 없을 수 있으며, 강제 종료에서는 기록을 보장하지 않습니다.
+pytest가 `KeyboardInterrupt`를 감지한 경우 기록하며 v2는 `reason: "keyboard_interrupt"`를 담습니다. 이전 이벤트에는 없을 수 있으며, 강제 종료에서는 기록을 보장하지 않습니다.
 
 ### session_finish
 

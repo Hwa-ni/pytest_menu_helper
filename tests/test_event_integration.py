@@ -12,9 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEMO = ROOT / "examples" / "fastapi_demo"
 
 
-def run_pytest(project, *args, use_project_root=True):
+def run_pytest(project, *args, use_project_root=True, extra_env=None):
     env = os.environ.copy()
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env.pop("PYTEST_MENU_DISABLE", None)
+    env.pop("PMH_ENV_ID", None)
+    # Never write into the real events folder from tests.
+    env["PYTEST_MENU_EVENTS_DIR"] = str(project / ".isolated-events")
+    env.update(extra_env or {})
     env["PYTHONPATH"] = os.pathsep.join(
         [str(ROOT / "src"), env.get("PYTHONPATH", "")]
     )
@@ -36,7 +41,7 @@ def assert_common(events, project):
     assert len(run_ids) == 1
     UUID(next(iter(run_ids)))
     for event in events:
-        assert event["schema_version"] == 1
+        assert event["schema_version"] == 2
         assert isinstance(event["event"], str)
         assert event["project_root"] == str(project.resolve())
         assert isinstance(event["timestamp"], str) and event["timestamp"]
@@ -94,11 +99,90 @@ def test_collection_error_has_detail(tmp_path):
 def test_disabled_and_run_ids_are_distinct(tmp_path):
     (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     assert run_pytest(tmp_path, "test_ok.py").returncode == 0
-    assert not list(tmp_path.glob("*.jsonl"))
     first, second = tmp_path / "first.jsonl", tmp_path / "second.jsonl"
     assert run_pytest(tmp_path, "--menu-events", first, "test_ok.py").returncode == 0
     assert run_pytest(tmp_path, "--menu-events", second, "test_ok.py").returncode == 0
     assert assert_common(read_events(first), tmp_path) != assert_common(read_events(second), tmp_path)
+
+
+def test_default_folder_gets_one_file_per_run(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    folder = tmp_path / ".isolated-events"
+    for _ in range(2):
+        assert run_pytest(tmp_path, "test_ok.py").returncode == 0
+    files = sorted(folder.glob("*.jsonl"))
+    assert len(files) == 2
+    for file in files:
+        events = read_events(file)
+        run_id = assert_common(events, tmp_path)
+        assert file.name == f"{run_id}.jsonl"
+        assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    assert oct(folder.stat().st_mode & 0o777) == "0o700"
+
+
+def test_session_start_has_env_args_and_collected_list(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_a():\n    pass\ndef test_b():\n    pass\n")
+    destination = tmp_path / "events.jsonl"
+    run_pytest(tmp_path, "--menu-events", destination, "-k", "test_a", "test_ok.py",
+               extra_env={"PMH_ENV_ID": "env-a"})
+    events = read_events(destination)
+    start = events[0]
+    assert start["env"]["id"] == "env-a"
+    assert start["env"]["python_version"] == sys.version.split()[0]
+    assert Path(start["env"]["python_path"]).is_absolute()
+    assert start["env"]["pytest_version"] and "plugin_version" in start["env"]
+    assert "-k" in start["args"] and "test_a" in start["args"]
+    collected = next(e for e in events if e["event"] == "session_collected")
+    assert collected["nodeids"] == ["test_ok.py::test_a"]
+
+
+def test_env_id_defaults_to_prefix_hash(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    destination = tmp_path / "events.jsonl"
+    run_pytest(tmp_path, "--menu-events", destination, "test_ok.py")
+    env_id = read_events(destination)[0]["env"]["id"]
+    assert len(env_id) == 12 and int(env_id, 16) >= 0
+
+
+def test_disable_switch_writes_nothing(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    result = run_pytest(tmp_path, "test_ok.py", extra_env={"PYTEST_MENU_DISABLE": "1"})
+    assert result.returncode == 0
+    assert not (tmp_path / ".isolated-events").exists()
+
+
+def test_interrupt_records_reason(tmp_path):
+    (tmp_path / "test_stop.py").write_text("def test_stop():\n    raise KeyboardInterrupt()\n")
+    destination = tmp_path / "events.jsonl"
+    run_pytest(tmp_path, "--menu-events", destination, "test_stop.py")
+    interrupted = next(e for e in read_events(destination) if e["event"] == "session_interrupted")
+    assert interrupted["reason"] == "keyboard_interrupt"
+
+
+def test_autoload_via_entry_point(tmp_path):
+    from importlib.metadata import entry_points
+    found = entry_points()
+    group = found.select(group="pytest11") if hasattr(found, "select") else found.get("pytest11", [])
+    names = [e.name for e in group]
+    if "pytest_menu_helper.plugin" not in names:
+        import pytest
+        pytest.skip("패키지가 설치되지 않아 pytest11 entry point가 없습니다")
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    env = os.environ.copy()
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+    env.pop("PYTEST_MENU_DISABLE", None)
+    env["PYTEST_MENU_EVENTS_DIR"] = str(tmp_path / "auto")
+    result = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "test_ok.py"],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = list((tmp_path / "auto").glob("*.jsonl"))
+    assert len(files) == 1
+    assert read_events(files[0])[-1]["event"] == "session_finish"
+    # 같은 모듈을 -p로 다시 지정해도 중복 등록 오류가 없어야 한다.
+    again = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+                            "-p", "pytest_menu_helper.plugin", "test_ok.py"],
+                           cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert again.returncode == 0, again.stdout + again.stderr
 
 
 def test_repeated_runs_append_to_same_file(tmp_path):

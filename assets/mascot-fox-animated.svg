@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">pytest Menu Helper fox mascot, animated</title>
+  <desc id="desc">A friendly orange fox testing companion gently bounces, wags its tail, and blinks.</desc>
+  <style>
+    .fox { animation: run-bob 520ms ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+    .tail { animation: wag 420ms ease-in-out infinite; transform-box: fill-box; transform-origin: 96% 48%; }
+    .leg-a { animation: stride-a 520ms ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 5%; }
+    .leg-b { animation: stride-b 520ms ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 5%; }
+    .arm-a { animation: arm-a 520ms ease-in-out infinite; transform-box: fill-box; transform-origin: 100% 0%; }
+    .arm-b { animation: arm-b 520ms ease-in-out infinite; transform-box: fill-box; transform-origin: 0% 0%; }
+    .eye { animation: blink 4.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+    .eye:nth-of-type(2) { animation-delay: 80ms; }
+    @keyframes run-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+    @keyframes wag { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(16deg); } }
+    @keyframes stride-a { 0%, 100% { transform: rotate(17deg); } 50% { transform: rotate(-16deg); } }
+    @keyframes stride-b { 0%, 100% { transform: rotate(-16deg); } 50% { transform: rotate(17deg); } }
+    @keyframes arm-a { 0%, 100% { transform: rotate(-9deg); } 50% { transform: rotate(10deg); } }
+    @keyframes arm-b { 0%, 100% { transform: rotate(10deg); } 50% { transform: rotate(-9deg); } }
+    @keyframes blink { 0%, 45%, 53%, 100% { transform: scaleY(1); } 49% { transform: scaleY(.12); } }
+    @media (prefers-reduced-motion: reduce) {
+      .fox, .tail, .leg-a, .leg-b, .arm-a, .arm-b, .eye { animation: none; }
+    }
+  </style>
+  <g class="fox" stroke="#563C39" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <g class="tail">
+      <path fill="#E98545" d="M73 171c-30-4-45 10-43 29 2 18 23 27 43 17 12-6 18-19 16-34z"/>
+      <path fill="#FFF0D7" d="M36 196c7 11 21 14 34 7 7-4 11-10 13-17-17-5-35-1-47 10z" stroke-width="5"/>
+    </g>
+    <path class="leg-a" fill="#D96F3C" d="M90 190l-5 28c-1 7 4 12 11 12h18c7 0 11-5 10-11l-4-31z"/>
+    <path class="leg-b" fill="#D96F3C" d="M145 190l-2 28c0 7 5 12 12 12h17c7 0 11-5 10-11l-5-31z"/>
+    <path class="leg-a" fill="#563C39" d="M84 222c0-5 4-9 9-9h26c7 0 11 5 11 11v3H90c-4 0-6-2-6-5z" stroke-width="5"/>
+    <path class="leg-b" fill="#563C39" d="M140 222c0-5 4-9 9-9h27c6 0 10 5 10 11v3h-40c-4 0-6-2-6-5z" stroke-width="5"/>
+    <path fill="#E98545" d="M77 137c0-20 18-35 44-35h31c27 0 45 17 45 43v39c0 15-11 26-27 26h-66c-16 0-27-11-27-26z"/>
+    <path fill="#FFF0D7" stroke-width="5" d="M108 132c-12 12-15 34-11 57 3 14 14 22 30 22h20c14-12 19-34 14-54-5-19-25-31-53-25z"/>
+    <path fill="#E98545" d="M72 54 66 16c-1-7 6-10 11-5l32 29c9-3 19-4 29-2l30-27c5-5 12-2 11 5l-5 40c13 12 20 29 18 47-3 31-30 52-67 52-38 0-66-22-68-54-1-19 5-36 15-47z"/>
+    <path fill="#F5B274" stroke-width="5" d="m78 28 25 22-19 13z"/>
+    <path fill="#F5B274" stroke-width="5" d="m171 28-24 22 19 13z"/>
+    <path fill="#FFF0D7" stroke-width="5" d="M88 93c4-18 20-28 39-28 20 0 36 10 41 28 5 18-8 36-24 41-8 3-16-1-19-8-4 7-12 11-21 8-15-5-20-23-16-41z"/>
+    <ellipse class="eye" cx="106" cy="85" rx="4.5" ry="6" fill="#563C39" stroke="none"/>
+    <ellipse class="eye" cx="151" cy="85" rx="4.5" ry="6" fill="#563C39" stroke="none"/>
+    <path fill="#563C39" stroke="none" d="M123 99c0-4 3-7 7-7s7 3 7 7c0 3-4 6-7 6s-7-3-7-6z"/>
+    <path fill="none" stroke-width="4" d="M130 105c-1 8-8 11-14 7m14-7c2 8 9 11 15 7"/>
+    <path fill="#65CBB4" stroke-width="5" d="M89 119c12 7 26 10 42 10 13 0 25-3 36-9l5 14c-12 9-27 14-43 14-18 0-34-5-46-14z"/>
+    <path fill="#65CBB4" stroke-width="5" d="m108 140 1 25 15-9 12 12 3-27z"/>
+    <path class="arm-a" fill="#E98545" d="M101 135c-10 0-18 4-23 12l-14 20c-3 5-1 11 4 14 5 3 10 1 13-3l17-19 9-7z"/>
+    <path class="arm-b" fill="#E98545" d="M165 135c10 0 18 4 23 12l14 20c3 5 1 11-4 14-5 3-10 1-13-3l-17-19-9-7z"/>
+  </g>
+</svg>

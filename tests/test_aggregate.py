@@ -86,8 +86,12 @@ def test_missing_finish_and_invalid_stream(tmp_path):
         aggregate(events + events)
     with pytest.raises(ValueError):
         aggregate(events[:1] + [dict(events[1], run_id='other')])
+    report = next(e for e in events if e['event'] == 'test_report')
     with pytest.raises(ValueError):
-        aggregate(events[:1] + [events[1], events[1]])
+        aggregate(events[:1] + [report, report])
+    collected = next(e for e in events if e['event'] == 'session_collected')
+    with pytest.raises(ValueError):
+        aggregate(events[:1] + [collected, collected])
 
 
 def test_multiple_runs_reader_and_partial_json(tmp_path):
@@ -126,6 +130,17 @@ def test_missing_teardown_does_not_claim_completion(tmp_path):
     assert aggregate(without_teardown)['state'] == 'incomplete'
 
 
+def test_v1_events_still_aggregate():
+    base = {'schema_version': 1, 'run_id': 'r', 'project_root': '/p', 'timestamp': 't'}
+    events = [dict(base, event='session_start'),
+              *[dict(base, event='test_report', nodeid='t::a', phase=ph, outcome='passed', wasxfail=None,
+                     strict_xpass=False, failure=None) for ph in ('setup', 'call', 'teardown')],
+              dict(base, event='session_finish', exit_code=0, collected=1)]
+    summary = aggregate(events)
+    assert summary['state'] == 'completed' and summary['verdict'] == 'passed'
+    assert summary['env'] is None
+
+
 def test_forced_process_exit_is_incomplete(tmp_path):
     result, events = run_case(tmp_path, 'import os\ndef test_stop(): os._exit(7)\n')
     assert result.returncode == 7
@@ -133,7 +148,8 @@ def test_forced_process_exit_is_incomplete(tmp_path):
 
 
 def test_same_test_file_selected_twice(tmp_path):
-    result, events = run_case(tmp_path, 'def test_ok(): pass\n', str(tmp_path / 'test_sample.py'))
+    # pytest 9는 중복 인수를 제거하므로 --keep-duplicates로 버전과 무관하게 두 번 실행시킨다.
+    result, events = run_case(tmp_path, 'def test_ok(): pass\n', '--keep-duplicates', str(tmp_path / 'test_sample.py'))
     assert result.returncode == 0
     summary = aggregate(events)
     assert summary['state'] == 'completed' and summary['verdict'] == 'passed'

@@ -24,8 +24,9 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
     errors = []
     finish = None
     interrupted = False
+    collected = False
     for index, row in enumerate(rows):
-        if row.get("schema_version") != 1 or row.get("run_id") != run_id or row.get("project_root") != root:
+        if row.get("schema_version") not in (1, 2) or row.get("run_id") != run_id or row.get("project_root") != root:
             raise ValueError("서로 다른 실행 또는 지원하지 않는 이벤트가 섞였습니다")
         kind = row.get("event")
         if (index and kind == "session_start") or finish is not None:
@@ -47,6 +48,10 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
             interrupted = True
         elif kind == "session_finish":
             finish = row
+        elif kind == "session_collected":
+            if collected:
+                raise ValueError("수집 목록 이벤트가 중복되었습니다")
+            collected = True
         elif kind != "session_start":
             raise ValueError("지원하지 않는 이벤트 종류입니다")
 
@@ -101,6 +106,7 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
         else:
             verdict = "attention"
     return {"state": state, "verdict": verdict, "run_id": run_id, "project_root": root,
+            "env": first.get("env"),
             "exit_code": finish.get("exit_code") if finish else None,
             "counts": counts, "tests": tests, "collection_errors": errors}
 

@@ -1,12 +1,16 @@
-"""Opt-in pytest JSONL event collector.
+"""pytest JSONL event collector (schema v2).
 
-Load with ``-p pytest_menu_helper.plugin --menu-events PATH``.
+Installed in a Python environment it loads automatically (``pytest11`` entry point) and writes
+one file per run to the events folder. ``--menu-events PATH`` appends to an explicit file instead.
+Set ``PYTEST_MENU_DISABLE=1`` to turn collection off.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -14,6 +18,36 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+SCHEMA_VERSION = 2
+DEFAULT_EVENTS_DIR = Path.home() / "Library" / "Application Support" / "pytest-menu-helper" / "events"
+
+
+def events_dir() -> Path:
+    """Folder shared with the app. PYTEST_MENU_EVENTS_DIR overrides it for tests and development."""
+    override = os.environ.get("PYTEST_MENU_EVENTS_DIR")
+    return Path(override) if override else DEFAULT_EVENTS_DIR
+
+
+def _plugin_version() -> str | None:
+    try:
+        from importlib.metadata import version
+        return version("pytest-menu-helper")
+    except Exception:
+        return None
+
+
+def _environment() -> dict[str, Any]:
+    # Name and version alone do not identify an environment; the prefix path does.
+    prefix = os.path.realpath(sys.prefix)
+    return {
+        "id": os.environ.get("PMH_ENV_ID") or hashlib.sha256(prefix.encode()).hexdigest()[:12],
+        "python_path": os.path.realpath(sys.executable),
+        "python_version": platform.python_version(),
+        "pytest_version": pytest.__version__,
+        "plugin_version": _plugin_version(),
+    }
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -24,19 +58,27 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    path = config.getoption("--menu-events")
-    if path is not None:
-        config.pluginmanager.register(_Collector(config, path), "menu-helper-collector")
+    if os.environ.get("PYTEST_MENU_DISABLE") == "1":
+        return
+    # xdist workers report to the controller; only the controller records the run.
+    if hasattr(config, "workerinput") or getattr(config.option, "help", False):
+        return
+    config.pluginmanager.register(_Collector(config, config.getoption("--menu-events")), "menu-helper-collector")
 
 
 class _Collector:
-    def __init__(self, config: pytest.Config, path: str) -> None:
+    def __init__(self, config: pytest.Config, path: str | None) -> None:
         self.config = config
         self.root = Path(config.rootpath).resolve()
         self.run_id = str(uuid.uuid4())
         self.occurrences: dict[str, int] = {}
+        self.seq = 0
         self.stream = None
         try:
+            if path is None:
+                folder = events_dir()
+                folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path = str(folder / f"{self.run_id}.jsonl")
             self.stream = open(path, "a", encoding="utf-8", buffering=1)
         except (OSError, ValueError) as exc:
             self._warn(exc)
@@ -56,8 +98,10 @@ class _Collector:
     def _write(self, event: str, **fields: Any) -> None:
         if self.stream is None:
             return
+        self.seq += 1
         payload = {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
+            "seq": self.seq,
             "event": event,
             "run_id": self.run_id,
             "project_root": str(self.root),
@@ -96,7 +140,13 @@ class _Collector:
         }
 
     def pytest_sessionstart(self, session: pytest.Session) -> None:
-        self._write("session_start")
+        self._write(
+            "session_start", env=_environment(),
+            args=[str(arg) for arg in self.config.invocation_params.args],
+        )
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        self._write("session_collected", nodeids=[item.nodeid for item in session.items])
 
     def pytest_runtest_logstart(self, nodeid: str, location: Any) -> None:
         self.occurrences[nodeid] = self.occurrences.get(nodeid, 0) + 1
@@ -129,7 +179,7 @@ class _Collector:
             self._write("collection_error", nodeid=report.nodeid, failure=self._failure(report))
 
     def pytest_keyboard_interrupt(self, excinfo: Any) -> None:
-        self._write("session_interrupted")
+        self._write("session_interrupted", reason="keyboard_interrupt")
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         self._write("session_finish", exit_code=int(exitstatus), collected=session.testscollected)

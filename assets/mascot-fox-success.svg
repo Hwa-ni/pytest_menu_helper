@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">pytest Menu Helper fox mascot, success</title>
+  <desc id="desc">A friendly orange fox testing companion celebrates with repeated little jumps.</desc>
+  <style>
+    .fox { animation: celebrate 1100ms cubic-bezier(.35, 0, .4, 1) infinite; transform-box: fill-box; transform-origin: center bottom; }
+    .tail { animation: cheer-tail 650ms ease-in-out infinite; transform-box: fill-box; transform-origin: 96% 48%; }
+    .leg-a { animation: tuck-a 1100ms ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 5%; }
+    .leg-b { animation: tuck-b 1100ms ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 5%; }
+    .sparkles { animation: sparkle 850ms ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+    @keyframes celebrate { 0%, 100% { transform: translateY(0) scale(1); } 28% { transform: translateY(-8px) scale(1.02); } 48% { transform: translateY(0) scale(1.04, .92); } 66% { transform: translateY(-3px) scale(1); } }
+    @keyframes cheer-tail { 0%, 100% { transform: rotate(-20deg); } 50% { transform: rotate(20deg); } }
+    @keyframes tuck-a { 0%, 25%, 100% { transform: rotate(0); } 42%, 62% { transform: rotate(-24deg); } }
+    @keyframes tuck-b { 0%, 25%, 100% { transform: rotate(0); } 42%, 62% { transform: rotate(24deg); } }
+    @keyframes sparkle { from { opacity: .45; transform: scale(.8); } to { opacity: 1; transform: scale(1.12); } }
+    @media (prefers-reduced-motion: reduce) {
+      .fox, .tail, .leg-a, .leg-b, .sparkles { animation: none; }
+    }
+  </style>
+  <g class="fox" stroke="#563C39" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <g class="tail">
+      <path fill="#E98545" d="M73 171c-30-4-45 10-43 29 2 18 23 27 43 17 12-6 18-19 16-34z"/>
+      <path fill="#FFF0D7" d="M36 196c7 11 21 14 34 7 7-4 11-10 13-17-17-5-35-1-47 10z" stroke-width="5"/>
+    </g>
+    <path class="leg-a" fill="#D96F3C" d="M90 190l-5 28c-1 7 4 12 11 12h18c7 0 11-5 10-11l-4-31z"/>
+    <path class="leg-b" fill="#D96F3C" d="M145 190l-2 28c0 7 5 12 12 12h17c7 0 11-5 10-11l-5-31z"/>
+    <path class="leg-a" fill="#563C39" d="M84 222c0-5 4-9 9-9h26c7 0 11 5 11 11v3H90c-4 0-6-2-6-5z" stroke-width="5"/>
+    <path class="leg-b" fill="#563C39" d="M140 222c0-5 4-9 9-9h27c6 0 10 5 10 11v3h-40c-4 0-6-2-6-5z" stroke-width="5"/>
+    <path fill="#E98545" d="M77 137c0-20 18-35 44-35h31c27 0 45 17 45 43v39c0 15-11 26-27 26h-66c-16 0-27-11-27-26z"/>
+    <path fill="#FFF0D7" stroke-width="5" d="M108 132c-12 12-15 34-11 57 3 14 14 22 30 22h20c14-12 19-34 14-54-5-19-25-31-53-25z"/>
+    <path fill="#E98545" d="M72 54 66 16c-1-7 6-10 11-5l32 29c9-3 19-4 29-2l30-27c5-5 12-2 11 5l-5 40c13 12 20 29 18 47-3 31-30 52-67 52-38 0-66-22-68-54-1-19 5-36 15-47z"/>
+    <path fill="#F5B274" stroke-width="5" d="m78 28 25 22-19 13z"/>
+    <path fill="#F5B274" stroke-width="5" d="m171 28-24 22 19 13z"/>
+    <path fill="#FFF0D7" stroke-width="5" d="M88 93c4-18 20-28 39-28 20 0 36 10 41 28 5 18-8 36-24 41-8 3-16-1-19-8-4 7-12 11-21 8-15-5-20-23-16-41z"/>
+    <path d="M101 87c3-5 8-5 11 0m33 0c3-5 8-5 11 0" fill="none" stroke="#563C39" stroke-width="4" stroke-linecap="round"/>
+    <path fill="#563C39" stroke="none" d="M123 99c0-4 3-7 7-7s7 3 7 7c0 3-4 6-7 6s-7-3-7-6z"/>
+    <path fill="none" stroke-width="4" d="M130 105c-1 8-8 11-14 7m14-7c2 8 9 11 15 7"/>
+    <path fill="#65CBB4" stroke-width="5" d="M89 119c12 7 26 10 42 10 13 0 25-3 36-9l5 14c-12 9-27 14-43 14-18 0-34-5-46-14z"/>
+    <path fill="#65CBB4" stroke-width="5" d="m108 140 1 25 15-9 12 12 3-27z"/>
+    <path fill="#E98545" d="M101 135 C91 129 83 118 77 107 L67 91 C64 86 67 81 72 80 C77 79 80 83 83 88 L101 113 112 121z"/>
+    <path fill="#E98545" d="M165 135 C175 129 183 118 189 107 L199 91 C202 86 199 81 194 80 C189 79 186 83 183 88 L165 113 154 121z"/>
+    <g class="sparkles" fill="none" stroke="#E3A83F" stroke-width="5" stroke-linecap="round">
+      <path d="M42 74v16m-8-8h16M214 70v16m-8-8h16"/>
+    </g>
+  </g>
+</svg>
