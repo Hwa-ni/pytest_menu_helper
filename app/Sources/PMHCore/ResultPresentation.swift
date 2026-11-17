@@ -6,6 +6,8 @@
 // 링·건수·실패 목록처럼 "보여 주는 방법"만 정한다.
 // 9단계(다중 환경 동시 실행)를 위해 환경을 항상 목록(rows)으로 다룬다. 지금은 동시에 1건만 실행되지만
 // 행마다 상태·진행을 따로 계산하므로, 실행이 여러 건이 되어도 이 구조를 그대로 쓸 수 있다.
+// 관리 동작용 값(행의 조치 줄·제거 막기 이유, 상세의 환경 정보, 프로젝트 제거 막기 이유)은
+// ManagementPresentation의 함수로 만들어 여기서 함께 채운다. 그래서 팝오버는 PopoverState 하나만 보고 그린다.
 
 import Foundation
 
@@ -100,6 +102,9 @@ public struct EnvDetailModel: Equatable {
     public var failures: [FailureEntry]
     /// 상세 아래에 보여 줄 안내 문장들(미실행 설명, 오류 내용, 실행 불가 이유 등).
     public var notes: [String]
+    /// 상세 맨 위 환경 정보 줄(Python 경로, pytest·FastAPI·플러그인 버전). build가 채운다.
+    /// detail()만 부르면 비어 있다(그 함수는 환경 등록 정보를 받지 않기 때문이다).
+    public var info: [String] = []
 }
 
 /// 환경 행 오른쪽 버튼.
@@ -128,6 +133,10 @@ public struct EnvRowModel: Equatable, Identifiable {
     /// 버튼에 마우스를 올렸을 때 보여 줄 설명(꺼진 이유 등).
     public var actionHelp: String?
     public var isSelected: Bool
+    /// 행 아래 조치 줄(문제 문장과 설치 명령). 검사 중이거나 준비됨이면 비어 있다.
+    public var issues: [IssueLine] = []
+    /// 이 환경을 지금 제거할 수 없는 이유(실행 중). nil이면 "⋯ > 환경 제거"를 켠다.
+    public var removeBlockedReason: String? = nil
 }
 
 /// 프로젝트 고르기 목록의 항목.
@@ -145,6 +154,10 @@ public struct PopoverState: Equatable {
     public var detail: EnvDetailModel?
     /// 프로젝트나 환경이 없을 때 보여 줄 안내. 있으면 목록 대신 이 문장을 보여 준다.
     public var emptyMessage: String?
+    /// 선택한 프로젝트 폴더 경로(머리 아래 작은 글씨). 프로젝트가 없으면 nil.
+    public var selectedProjectPath: String? = nil
+    /// 선택한 프로젝트를 지금 제거할 수 없는 이유(그 프로젝트의 환경이 실행 중). nil이면 제거할 수 있다.
+    public var projectRemoveBlockedReason: String? = nil
 
     /// 빈 상태(프로젝트 없음). 화면 쪽 뷰 모델의 첫 값으로 쓴다.
     public static let empty = PopoverState(projects: [], selectedProjectID: nil, rows: [], selectedEnvID: nil,
@@ -267,6 +280,10 @@ public enum ResultPresentation {
         var row = EnvRowModel(id: env.id, name: env.name, versionText: versionText, tone: .idle,
                               statusText: "실행 전", progress: nil, indeterminate: false, progressText: nil,
                               action: .run(enabled: false), actionHelp: nil, isSelected: selected)
+        // 조치 줄과 제거 막기는 실행 중 여부와 상관없이 채운다(실행 중 행에서도 "⋯ > 환경 제거"가 꺼져 보여야 한다).
+        row.issues = ManagementPresentation.issueLines(check)
+        row.removeBlockedReason = ManagementPresentation.environmentRemovalBlockedReason(
+            envID: env.id, activeEnvID: snapshot.active?.envID)
         if let active = snapshot.active, active.envID == env.id {
             row.tone = .running
             row.action = .stop(enabled: !active.stopping)
@@ -295,7 +312,11 @@ public enum ResultPresentation {
             row.statusText = "환경 검사 중"
         } else if let reason = reason {
             row.tone = .unavailable
-            row.statusText = "실행 불가: \(reason)"
+            // 이유가 바로 아래 조치 줄과 같은 문장이면 두 번 보이지 않게 짧게 가리킨다(4단계 메뉴와 같은 규칙).
+            // 조치 줄에 없는 이유는 그대로 적는다. 빠뜨리면 왜 ▶가 꺼졌는지 알 수 없다.
+            // 전체 이유는 ▶ 버튼 도움말(actionHelp)에 그대로 남는다.
+            let listedBelow = !row.issues.isEmpty && (check?.issues.contains { reason.contains($0.message) } ?? false)
+            row.statusText = listedBelow ? "실행 불가: 아래 문제를 먼저 해결하세요." : "실행 불가: \(reason)"
         } else if let outcome = snapshot.results[env.id] {
             let status = outcomeStatus(outcome)
             row.tone = status.tone
@@ -438,7 +459,7 @@ public enum ResultPresentation {
         var state = PopoverState(projects: options, selectedProjectID: nil, rows: [], selectedEnvID: nil,
                                  detail: nil, emptyMessage: nil)
         guard !registry.projects.isEmpty else {
-            state.emptyMessage = "등록한 프로젝트가 없습니다. ⚙에서 \"프로젝트 추가...\"를 고르세요."
+            state.emptyMessage = "등록한 프로젝트가 없습니다. \"프로젝트 추가\"를 눌러 pytest를 쓸 폴더를 고르세요."
             return state
         }
         let activeEnv = snapshot.active?.envID
@@ -446,8 +467,10 @@ public enum ResultPresentation {
             ?? registry.projects.first { p in p.environments.contains { $0.id == activeEnv } }
             ?? registry.projects[0]
         state.selectedProjectID = project.id
+        state.selectedProjectPath = project.path
+        state.projectRemoveBlockedReason = ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: activeEnv)
         guard !project.environments.isEmpty else {
-            state.emptyMessage = "이 프로젝트에 환경이 없습니다. ⚙에서 \"환경 추가...\"를 고르세요."
+            state.emptyMessage = "이 프로젝트에 환경이 없습니다. \"+ 환경 추가\"를 눌러 Python을 고르세요."
             return state
         }
         let env = project.environments.first { $0.id == preferredEnvID }
@@ -462,6 +485,7 @@ public enum ResultPresentation {
         let blocked = checks[env.id].flatMap { RunEligibility.reason(for: $0) }
         state.detail = detail(envID: env.id, active: active, outcome: snapshot.results[env.id],
                               elapsed: snapshot.elapsed[env.id], blockedReason: blocked)
+        state.detail?.info = ManagementPresentation.environmentInfo(env: env, check: checks[env.id])
         return state
     }
 }

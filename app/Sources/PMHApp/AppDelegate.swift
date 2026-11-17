@@ -1,88 +1,46 @@
 // AppDelegate.swift
-// 메뉴 막대 앱의 본체. 프로젝트·환경 등록 메뉴를 만들고, pytest 실행 상태를 메뉴와 팝오버에 보여 준다.
-// 입력: 등록 파일(ProjectStore), 환경 검사 결과(EnvironmentChecker), 실행 상태 알림(RunController).
-// 출력: 상태 막대 메뉴, 결과 팝오버, 등록 파일 저장, pytest 실행·중지 요청.
-// 아이콘 왼쪽 클릭은 결과 팝오버(5단계, PopoverView.swift)를, 오른쪽 클릭(또는 control+클릭)과
-// 팝오버의 ⚙ 버튼은 기존 메뉴를 연다. statusItem.menu를 고정으로 걸지 않는 이유: 걸어 두면 왼쪽 클릭도
-// 메뉴를 열어 버려 팝오버를 띄울 수 없다. 그래서 메뉴는 열 때만 잠깐 걸었다가 바로 뗀다(showMenu).
-// 실행 중인 환경과 그 환경이 속한 프로젝트는 제거할 수 없다. 제거하면 메뉴에서 "중지"가 사라지고
-// 그 실행이 끝날 때까지 다른 환경의 실행 버튼도 꺼진 채 남기 때문이다.
+// 메뉴 막대 앱의 본체. 상태 막대 아이콘, 결과 팝오버, 등록 파일 저장, 환경 검사, pytest 실행·중지를 잇는다.
+// 입력: 등록 파일(ProjectStore), 환경 검사 결과(EnvironmentChecker), 실행 상태 알림(RunController),
+// 팝오버 화면의 사용자 동작(PopoverViewModel의 콜백).
+// 출력: 팝오버 화면 상태, 등록 파일 저장, 폴더·파일 선택 창, 클립보드 복사, pytest 실행·중지 요청.
+// 아이콘 왼쪽 클릭은 팝오버를 연다. 앱의 모든 동작(프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 종료)은
+// 팝오버 안에 있다(PopoverView.swift). 오른쪽 클릭(또는 control+클릭)은 "종료" 하나만 있는 작은 메뉴다.
+// 예전에는 같은 기능을 큰 NSMenu와 팝오버 두 곳에서 관리했는데, 열린 메뉴 갱신 코드가 복잡하고 어긋나기 쉬워
+// 팝오버 한 곳으로 모았다.
+// 실행 중인 환경과 그 환경이 속한 프로젝트는 제거할 수 없다. 제거하면 팝오버에서 그 행(■ 중지)이 사라지고
+// 그 실행이 끝날 때까지 다른 환경의 ▶도 꺼진 채 남기 때문이다. 화면에서 막고, 동작 함수에서도 한 번 더 막는다.
 
 import AppKit
 import PMHCore
 import SwiftUI
 
-/// 클로저를 실행하는 메뉴 항목.
-final class ActionItem: NSMenuItem {
-    private let handler: () -> Void
-    init(_ title: String, enabled: Bool = true, handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(title: title, action: #selector(fire), keyEquivalent: "")
-        target = self
-        isEnabled = enabled
-    }
-    required init(coder: NSCoder) { fatalError() }
-    @objc private func fire() { handler() }
-}
-
-func infoItem(_ title: String) -> NSMenuItem {
-    let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-    item.isEnabled = false
-    return item
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
-    /// 지금 만들어 둔 메뉴. 오른쪽 클릭이나 ⚙ 버튼으로 열 때만 statusItem에 잠깐 건다.
-    private var menu: NSMenu?
-    /// 왼쪽 클릭으로 여는 결과 팝오버. 바깥을 누르면 닫힌다(.transient).
+    /// 오른쪽 클릭 메뉴("종료"만). 열 때만 statusItem에 잠깐 건다(showQuitMenu 참고).
+    private let quitMenu = NSMenu()
+    /// 왼쪽 클릭으로 여는 팝오버. 바깥을 누르면 닫힌다(.transient).
     private let popover = NSPopover()
     /// 팝오버 화면의 상태. 등록·검사·실행 상태가 바뀔 때마다 pushPopoverState로 넣는다.
     private let popoverModel = PopoverViewModel()
     /// 팝오버가 마지막으로 닫힌 시각. 아이콘을 눌러 닫을 때 바로 다시 열리는 것을 막는 데 쓴다(togglePopover 참고).
     private var popoverClosedAt: Date?
+    /// 폴더·파일 선택 창이 떠 있는지. 떠 있는 동안 아이콘 클릭으로 팝오버가 겹쳐 열리지 않게 한다.
+    private var panelIsOpen = false
     private let store = ProjectStore()
     private var registry = Registry()
+    /// 등록 파일 읽기 경고(깨진 파일 등). 팝오버 위쪽에 보인다.
     private var loadWarning: String?
+    /// 마지막 저장 실패 문장. 다음 저장이 성공하면 지운다.
+    private var saveError: String?
     private var checks: [String: EnvCheck] = [:] // 환경 id → 결과(없으면 검사 중)
     /// 컨트롤러 알림을 받는 직렬 큐. 여기서 메인 런루프의 common 모드로 다시 넘긴다(runStateArrived 참고).
     private let notifyQueue = DispatchQueue(label: "pmh.menu-notify")
     /// pytest 실행 담당. 프로세스·파일 읽기·집계는 컨트롤러의 백그라운드 큐에서 한다.
-    /// 변경 알림은 notifyQueue로 받은 뒤 메뉴가 열려 있어도 처리되는 방식으로 메인 스레드에 넘긴다.
+    /// 변경 알림은 notifyQueue로 받은 뒤 메인 스레드에 넘긴다.
     private lazy var controller = RunController(notifyQueue: notifyQueue) { [weak self] snapshot in
         self?.runStateArrived(snapshot)
     }
     private var runSnapshot = RunSnapshot(active: nil, results: [:])
-    /// 지금 메뉴에 걸려 있는 진행 줄. 메뉴가 열려 있는 동안 제목만 바꾸려고 기억한다.
-    private weak var progressItem: NSMenuItem?
-
-    /// 환경 하나의 메뉴 항목과 하위 메뉴. 실행 상태가 바뀌면 메뉴를 새로 만들지 않고 이 항목들을 그 자리에서 고친다.
-    /// 새로 만들면 안 되는 이유: 사용자가 보고 있는 열린 메뉴는 예전 객체라서, statusItem.menu를 바꿔 끼워도
-    /// 화면에는 반영되지 않는다. 그래서 끝난 실행이 계속 "실행 중"으로 보였다.
-    private struct EnvMenu {
-        let item: NSMenuItem
-        let sub: NSMenu
-        let env: PMHEnvironment
-        let project: Project
-    }
-    /// 환경 id → 지금 메뉴에 걸린 항목. rebuildMenu가 매번 새로 채운다.
-    private var envMenus: [String: EnvMenu] = [:]
-
-    /// 프로젝트 하위 메뉴의 "프로젝트 제거" 항목과 그 아래 이유 줄.
-    /// 실행 상태가 바뀌면 메뉴를 다시 만들지 않고 이 두 항목의 켜짐·숨김만 고친다(열린 메뉴에도 보이도록).
-    private struct ProjectMenu {
-        let removeItem: NSMenuItem
-        let reasonItem: NSMenuItem
-        let project: Project
-    }
-    /// 프로젝트 id → 지금 메뉴에 걸린 제거 항목. rebuildMenu가 매번 새로 채운다.
-    private var projectMenus: [UUID: ProjectMenu] = [:]
-    /// 실행 중이라 제거를 막을 때 보여 주는 이유 문장.
-    private static let removeBlockedReason = "실행 중에는 제거할 수 없습니다. 먼저 중지하세요."
-    /// 메뉴가 열려 있는지. 열려 있는 동안에는 메뉴 전체를 바꿔 끼우지 않는다.
-    private var menuIsOpen = false
-    /// 메뉴가 열려 있어 미뤄 둔 전체 다시 만들기가 있는지. 메뉴가 닫히면 처리한다.
-    private var rebuildPending = false
     private lazy var checker: EnvironmentChecker = {
         let repo = Bundle.main.object(forInfoDictionaryKey: "PMHRepoPath") as? String
         return EnvironmentChecker(repoPath: repo)
@@ -97,13 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusItemClicked(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        setupQuitMenu()
         setupPopover()
 
         let outcome = store.load()
         registry = outcome.registry
         loadWarning = outcome.warning
         for project in registry.projects { for env in project.environments { recheck(env) } }
-        rebuildMenu()
+        pushPopoverState()
         // 이전 실행이 남긴 이벤트·로그 파일 중 최신 50개만 남긴다(백그라운드).
         controller.cleanup()
     }
@@ -120,9 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     // MARK: pytest 실행 상태
 
     /// 컨트롤러 알림(notifyQueue에서 호출됨)을 메인 스레드로 넘긴다.
-    /// DispatchQueue.main 대신 메인 런루프의 common 모드를 쓰는 이유: 메뉴가 열려 있는 동안 런루프는
-    /// 이벤트 추적 모드로 돌기 때문에, 기본 모드에만 걸리는 작업은 메뉴를 닫을 때까지 미뤄질 수 있다.
-    /// common 모드에는 추적 모드가 포함되어 메뉴가 열린 채로도 처리된다.
+    /// DispatchQueue.main 대신 메인 런루프의 common 모드를 쓰는 이유: 팝오버 안의 "⋯" 메뉴나 Picker가 열려 있는 동안
+    /// 런루프는 이벤트 추적 모드로 돈다. 기본 모드에만 걸리는 작업은 그 메뉴를 닫을 때까지 미뤄질 수 있다.
+    /// common 모드에는 추적 모드와 모달 창 모드가 포함되어, 메뉴나 파일 선택 창이 떠 있어도 처리된다.
     /// notifyQueue가 직렬이라 알림 순서는 그대로 유지된다.
     private func runStateArrived(_ snapshot: RunSnapshot) {
         let main = CFRunLoopGetMain()
@@ -133,21 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         CFRunLoopWakeUp(main)
     }
 
-    /// 실행 상태를 메뉴에 반영한다(메인 스레드).
-    /// 진행 숫자만 바뀐 경우에는 진행 줄과 환경 제목만 고치고, 시작·종료·중지 같은 변화는
-    /// 각 환경 하위 메뉴의 내용을 그 자리에서 다시 채운다. 메뉴 전체를 바꿔 끼우지 않으므로 열린 메뉴에도 바로 보인다.
+    /// 실행 상태를 팝오버에 반영한다(메인 스레드). 바뀐 값만 넣으면 SwiftUI가 열린 팝오버를 그 자리에서 다시 그린다.
     private func runStateChanged(_ snapshot: RunSnapshot) {
-        let old = runSnapshot
         runSnapshot = snapshot
-        // 팝오버는 메뉴와 달리 바뀐 값만 넣으면 SwiftUI가 다시 그린다. 진행 숫자만 바뀐 경우도 같다.
         pushPopoverState()
-        if let a = old.active, let b = snapshot.active, a.runID == b.runID, a.stopping == b.stopping,
-           old.results == snapshot.results, let item = progressItem {
-            item.title = b.phase.text
-            if let ref = envMenus[b.envID] { ref.item.title = environmentTitle(ref.env) }
-            return
-        }
-        refreshRunSections()
     }
 
     // MARK: 팝오버
@@ -156,13 +104,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private func setupPopover() {
         popoverModel.onRun = { [weak self] envID in self?.runPytest(envID: envID) }
         popoverModel.onStop = { [weak self] in self?.controller.stop() }
-        popoverModel.onSettings = { [weak self] in
-            // 팝오버를 먼저 닫고 다음 차례에 메뉴를 연다. 같은 차례에 열면 닫히는 팝오버와 메뉴 추적이 겹친다.
-            self?.popover.performClose(nil)
-            DispatchQueue.main.async { self?.showMenu() }
+        popoverModel.onAddProject = { [weak self] in self?.addProject() }
+        popoverModel.onChoosePythonFile = { [weak self] in self?.choosePythonFile() }
+        popoverModel.onAddEnvironment = { [weak self] projectID, path, name in
+            self?.addEnvironment(to: projectID, pythonPath: path, name: name)
         }
+        popoverModel.onRemove = { [weak self] target in
+            switch target {
+            case .project(let id): self?.removeProject(id)
+            case .environment(let envID, let projectID): self?.removeEnvironment(envID, from: projectID)
+            }
+        }
+        popoverModel.onRecheckProject = { [weak self] id in self?.recheckProject(id) }
+        popoverModel.onRecheckEnvironment = { [weak self] envID in self?.recheckEnvironment(envID) }
+        popoverModel.onCopy = { command in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+        }
+        popoverModel.onQuit = { NSApp.terminate(nil) }
         let hosting = NSHostingController(rootView: PopoverRootView(model: popoverModel))
-        // 팝오버 크기를 SwiftUI 내용 크기에 맞춘다. 실패 목록을 펼치면 팝오버도 함께 커진다(상한은 화면 쪽 maxHeight).
+        // 팝오버 크기를 SwiftUI 내용 크기에 맞춘다. 폼을 열거나 실패 목록을 펼치면 팝오버도 함께 커진다
+        // (상한은 화면 쪽 스크롤 영역의 maxHeight).
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
         popover.behavior = .transient
@@ -173,14 +135,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
     /// 팝오버 화면에 지금 상태를 넣는다(메인 스레드). 등록·검사·실행 상태가 바뀌는 모든 곳에서 부른다.
     private func pushPopoverState() {
-        popoverModel.update(registry: registry, checks: checks, snapshot: runSnapshot)
+        popoverModel.update(registry: registry, checks: checks, snapshot: runSnapshot,
+                            notices: [loadWarning, saveError].compactMap { $0 })
     }
 
-    /// 아이콘 클릭. 오른쪽 클릭이나 control+왼쪽 클릭이면 메뉴, 그 밖의 왼쪽 클릭이면 팝오버.
+    /// 아이콘 클릭. 오른쪽 클릭이나 control+왼쪽 클릭이면 종료 메뉴, 그 밖의 왼쪽 클릭이면 팝오버.
     @objc private func statusItemClicked(_ sender: Any?) {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            showMenu()
+            showQuitMenu()
         } else {
             togglePopover()
         }
@@ -190,13 +153,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 열린 팝오버에서 아이콘을 누르면 .transient 동작이 마우스를 누르는 순간 먼저 닫아 버리고,
     /// 마우스를 뗄 때 이 함수가 불려 다시 열린다. 방금(0.3초 안) 닫혔으면 다시 열지 않아 이 깜빡임을 막는다.
     private func togglePopover() {
+        if panelIsOpen { return } // 선택 창이 끝나면 runPanelOutsidePopover가 다시 연다
         if popover.isShown { popover.performClose(nil); return }
         if let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3 { return }
-        guard let button = statusItem.button else { return }
-        popoverModel.resetSelection() // 열 때마다 기본 선택(실행 중인 환경)부터 보여 준다
+        showPopover(fresh: true)
+    }
+
+    /// 팝오버를 아이콘 아래에 연다.
+    /// - Parameter fresh: true면 사용자가 새로 연 것으로 보고 선택·폼·제거 확인을 처음 상태로 돌린다.
+    ///   false면(파일 선택 창 뒤에 다시 열 때) 하던 상태를 그대로 둔다.
+    private func showPopover(fresh: Bool) {
+        guard !popover.isShown, let button = statusItem.button else { return }
+        if fresh { popoverModel.prepareForFreshOpen() }
         pushPopoverState()
         // Dock 아이콘이 없는 앱(LSUIElement)은 활성화하지 않으면 팝오버 창이 키 창이 되지 못해
-        // 텍스트 선택·복사가 되지 않고 바깥 클릭으로 닫히지 않을 때가 있다.
+        // 이름 칸 입력, 텍스트 선택·복사가 되지 않고 바깥 클릭으로 닫히지 않을 때가 있다.
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -206,74 +177,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         popoverClosedAt = Date()
     }
 
-    /// 기존 메뉴를 아이콘 아래에 연다. 메뉴를 잠깐 걸고 버튼을 누른 것처럼 한 뒤 바로 뗀다.
+    /// 선택 창(NSOpenPanel)을 팝오버 밖에서 띄우고, 끝나면(확인·취소 모두) 팝오버를 다시 연다.
+    /// - Parameter body: 선택 창을 띄우고 결과를 처리하는 코드. 메인 스레드에서 동기로(runModal) 끝나야 한다.
+    /// 이 방식을 고른 이유: 팝오버는 .transient라 선택 창이 키 창이 되는 순간 저절로 닫힌다.
+    /// 창이 떠 있는 동안 behavior를 .applicationDefined로 바꿔 열어 두는 방법도 있지만, 상태 막대 팝오버 창은
+    /// 일반 창보다 높은 층에 떠서 선택 창을 가리거나 바깥 클릭에 엉뚱하게 반응할 수 있다. 닫고 다시 여는 쪽은
+    /// 4단계까지 메뉴에서 쓰던 runModal 흐름 그대로라 동작이 예측 가능하다. 화면 상태(선택한 프로젝트, 폼 입력값)는
+    /// 뷰 모델에 있어 닫혀도 사라지지 않고, showPopover(fresh: false)가 그대로 다시 보여 준다.
+    /// 주의: 같은 차례에 runModal을 부르면 버튼 동작 안에서 닫히는 팝오버와 모달이 겹친다. 그래서 먼저 닫고
+    /// 다음 차례(DispatchQueue.main.async)에 창을 띄운다.
+    private func runPanelOutsidePopover(_ body: @escaping () -> Void) {
+        guard !panelIsOpen else { return }
+        panelIsOpen = true
+        popover.performClose(nil)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            body()
+            self.panelIsOpen = false
+            self.showPopover(fresh: false)
+        }
+    }
+
+    // MARK: 오른쪽 클릭 메뉴
+
+    /// "종료" 하나만 있는 메뉴를 만든다. 다른 동작은 모두 팝오버에 있다.
+    private func setupQuitMenu() {
+        let quit = NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        quitMenu.addItem(quit)
+        quitMenu.delegate = self
+    }
+
+    /// 종료 메뉴를 아이콘 아래에 연다. 메뉴를 잠깐 걸고 버튼을 누른 것처럼 한 뒤 바로 뗀다.
+    /// statusItem.menu를 고정으로 걸지 않는 이유: 걸어 두면 왼쪽 클릭도 메뉴를 열어 팝오버를 띄울 수 없다.
     /// performClick은 메뉴가 닫힐 때까지 돌아오지 않는다(메뉴 추적). 돌아온 뒤 떼어야 다음 왼쪽 클릭이 다시 팝오버를 연다.
-    /// 메뉴가 열린 동안의 실시간 갱신(menuWillOpen·menuDidClose, common 모드 알림)은 예전과 같다.
-    private func showMenu() {
+    private func showQuitMenu() {
         if popover.isShown { popover.performClose(nil) }
-        guard let menu = menu, let button = statusItem.button else { return }
-        statusItem.menu = menu
+        guard let button = statusItem.button else { return }
+        statusItem.menu = quitMenu
         button.performClick(nil)
         statusItem.menu = nil
     }
 
-    /// 모든 환경 항목의 제목과 하위 메뉴 내용을 지금 상태로 다시 채운다(메뉴 객체는 그대로 둔다).
-    /// 프로젝트 하위 메뉴의 "프로젝트 제거" 항목도 함께 고친다. 실행이 끝나면 여기서 다시 켜진다.
-    private func refreshRunSections() {
-        progressItem = nil // 새로 채우는 진행 줄이 다시 지정한다. 지우지 않으면 사라진 줄을 계속 고친다.
-        for ref in envMenus.values {
-            ref.item.title = environmentTitle(ref.env)
-            ref.sub.removeAllItems()
-            fillEnvironmentMenu(ref.sub, env: ref.env, project: ref.project)
-        }
-        for ref in projectMenus.values { updateProjectRemoveItems(ref) }
-    }
-
-    /// 실행 중인 환경이 이 프로젝트에 있는지. 메뉴 표시에 쓰므로 메뉴가 아는 상태(runSnapshot)로 판단한다.
-    private func projectHasActiveRun(_ project: Project) -> Bool {
-        guard let active = runSnapshot.active else { return false }
-        return project.environments.contains { $0.id == active.envID }
-    }
-
-    /// "프로젝트 제거" 항목을 실행 상태에 맞춘다. 실행 중이면 끄고 이유 줄을 보이고, 아니면 켜고 이유 줄을 숨긴다.
-    /// 이유 줄을 지웠다 넣지 않고 숨기는 이유: 열린 메뉴에서 항목 순서를 바꾸지 않고 그 자리에서 바꾸기 위함이다.
-    private func updateProjectRemoveItems(_ ref: ProjectMenu) {
-        let blocked = projectHasActiveRun(ref.project)
-        ref.removeItem.isEnabled = !blocked
-        ref.reasonItem.isHidden = !blocked
-    }
-
-    // MARK: NSMenuDelegate (최상위 메뉴만)
-
-    func menuWillOpen(_ menu: NSMenu) {
-        menuIsOpen = true
-    }
-
-    /// 메뉴가 닫히면 열려 있는 동안 미뤄 둔 전체 다시 만들기를 한다.
-    /// 메뉴 항목의 동작(예: 다시 검사)이 닫힘보다 먼저 오든 나중에 오든, 이 처리로 결국 한 번은 반영된다.
+    /// performClick이 메뉴 추적 전에 돌아오는 경우에도 메뉴가 남아 왼쪽 클릭을 가로채지 않게 여기서도 뗀다.
     func menuDidClose(_ menu: NSMenu) {
-        menuIsOpen = false
-        // performClick이 메뉴 추적 전에 돌아오는 경우에도 메뉴가 남아 왼쪽 클릭을 가로채지 않게 여기서도 뗀다.
         statusItem.menu = nil
-        if rebuildPending {
-            rebuildPending = false
-            rebuildMenu()
-        }
     }
 
-    /// 실행 버튼. 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
-    private func runPytest(_ env: PMHEnvironment, in project: Project) {
-        _ = controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path)
-    }
+    // MARK: 실행
 
     /// 팝오버의 ▶. 환경 id로 등록 정보를 찾아 실행한다.
     /// 화면에서 버튼을 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때를 대비해 실행 가능 여부를 여기서도 확인한다.
     /// 등록에서 사라진 환경이거나 실행할 수 없는 환경이면 아무것도 하지 않는다.
+    /// 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
     private func runPytest(envID: String) {
         for project in registry.projects {
             guard let env = project.environments.first(where: { $0.id == envID }) else { continue }
             guard let check = checks[envID], RunEligibility.reason(for: check) == nil else { NSSound.beep(); return }
-            runPytest(env, in: project)
+            _ = controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path)
             return
         }
     }
@@ -298,158 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         return fallback
     }
 
-    // MARK: 메뉴
+    // MARK: 검사
 
-    /// 메뉴 전체를 새로 만들어 상태 아이콘에 건다.
-    /// 메뉴가 열려 있으면 바꿔 끼워도 화면에 보이지 않으므로, 실행 영역만 그 자리에서 고치고 전체는 닫힐 때로 미룬다.
-    private func rebuildMenu() {
-        // 팝오버는 메뉴가 열려 있든 아니든 바로 갱신한다(메뉴처럼 바꿔 끼울 때의 제약이 없다).
-        pushPopoverState()
-        if menuIsOpen {
-            rebuildPending = true
-            refreshRunSections()
-            return
-        }
-        envMenus = [:]
-        projectMenus = [:]
-        progressItem = nil
-        let menu = NSMenu()
-        menu.delegate = self
-        if let w = loadWarning {
-            menu.addItem(infoItem("⚠︎ " + w))
-            menu.addItem(.separator())
-        }
-        menu.addItem(ActionItem("프로젝트 추가...") { [weak self] in self?.addProject() })
-        if !registry.projects.isEmpty { menu.addItem(.separator()) }
-        for project in registry.projects { menu.addItem(projectItem(project)) }
-        menu.addItem(.separator())
-        menu.addItem(ActionItem("종료") { NSApp.terminate(nil) })
-        // 아이콘에 고정으로 걸지 않는다(왼쪽 클릭은 팝오버). 열 때 showMenu가 잠깐 건다.
-        self.menu = menu
-    }
-
-    private func projectItem(_ project: Project) -> NSMenuItem {
-        let summary = ProjectSummary.summarize(project.environments.map { checks[$0.id] })
-        let item = NSMenuItem(title: "\(project.name) — \(summary.label)", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        // 자동 활성화를 끄지 않으면 "프로젝트 제거"의 비활성 지정이 무시되어 실행 중에도 켜진다.
-        sub.autoenablesItems = false
-        sub.addItem(infoItem(project.path))
-        sub.addItem(.separator())
-        if project.environments.isEmpty {
-            sub.addItem(infoItem("환경이 없습니다. '환경 추가'로 등록하세요."))
-        }
-        for env in project.environments { sub.addItem(environmentItem(env, in: project)) }
-        sub.addItem(.separator())
-        sub.addItem(ActionItem("환경 추가...") { [weak self] in self?.addEnvironment(to: project.id) })
-        sub.addItem(ActionItem("환경 다시 검사") { [weak self] in
-            project.environments.forEach { self?.recheck($0) }
-            self?.rebuildMenu()
-        })
-        sub.addItem(.separator())
-        let remove = ActionItem("프로젝트 제거") { [weak self] in self?.removeProject(project.id) }
-        let reason = infoItem(Self.removeBlockedReason)
-        sub.addItem(remove)
-        sub.addItem(reason)
-        let ref = ProjectMenu(removeItem: remove, reasonItem: reason, project: project)
-        updateProjectRemoveItems(ref)
-        projectMenus[project.id] = ref
-        item.submenu = sub
-        return item
-    }
-
-    /// 환경 항목 제목: 이름 · Python 버전 · 검사 상태, 실행 중이면 진행 상태를 덧붙인다.
-    private func environmentTitle(_ env: PMHEnvironment) -> String {
-        let title: String
-        if let check = checks[env.id] {
-            let v = check.pythonVersionText.map { "Python \($0)" } ?? "Python -"
-            title = "\(env.name) · \(v) · \(check.status.label)"
-        } else {
-            title = "\(env.name) · 검사 중…"
-        }
-        guard let active = runSnapshot.active, active.envID == env.id else { return title }
-        return "\(title) · \(active.phase.text)"
-    }
-
-    /// 환경 항목과 하위 메뉴를 만들고, 실행 상태가 바뀔 때 고칠 수 있게 envMenus에 기억한다.
-    private func environmentItem(_ env: PMHEnvironment, in project: Project) -> NSMenuItem {
-        let item = NSMenuItem(title: environmentTitle(env), action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        // 자동 활성화를 끄지 않으면 "pytest 실행" 같은 항목의 비활성 지정이 무시되어 다시 켜진다.
-        sub.autoenablesItems = false
-        fillEnvironmentMenu(sub, env: env, project: project)
-        item.submenu = sub
-        envMenus[env.id] = EnvMenu(item: item, sub: sub, env: env, project: project)
-        return item
-    }
-
-    /// 환경 하위 메뉴의 내용을 채운다. 처음 만들 때와 실행 상태가 바뀔 때(비운 뒤) 모두 이 함수를 쓴다.
-    /// 매개변수 sub: 비어 있는 하위 메뉴. env·project: 이 메뉴가 가리키는 환경과 그 프로젝트.
-    private func fillEnvironmentMenu(_ sub: NSMenu, env: PMHEnvironment, project: Project) {
-        let check = checks[env.id]
-        let runningHere = runSnapshot.active?.envID == env.id ? runSnapshot.active : nil
-        sub.addItem(infoItem(env.pythonPath))
-        if let report = check?.report {
-            let pluginText = report.pluginInstalled ? "설치됨 \(report.pluginVersion ?? "(버전 불명)")" : "없음"
-            sub.addItem(infoItem("pytest \(report.pytestVersion ?? "없음") · FastAPI \(report.fastapiVersion ?? "없음") · 플러그인 \(pluginText)"))
-        }
-        addRunSection(to: sub, env: env, project: project, check: check, runningHere: runningHere)
-        for issue in check?.issues ?? [] {
-            sub.addItem(.separator())
-            sub.addItem(infoItem("\(issue.severity.label): \(issue.message)"))
-            if let command = issue.fixCommand {
-                sub.addItem(ActionItem("설치 명령 복사: \(command)") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                })
-            }
-        }
-        sub.addItem(.separator())
-        sub.addItem(ActionItem("이 환경 다시 검사") { [weak self] in
-            self?.recheck(env)
-            self?.rebuildMenu()
-        })
-        // 실행 중인 환경은 제거를 막는다. 제거하면 envMenus에서 빠져 "중지" 버튼에 닿을 수 없게 된다.
-        // 이 함수는 실행 상태가 바뀔 때마다 다시 불리므로(refreshRunSections), 실행이 끝나면 다시 켜진다.
-        sub.addItem(ActionItem("환경 제거", enabled: runningHere == nil) { [weak self] in
-            self?.removeEnvironment(env.id, from: project.id)
-        })
-        if runningHere != nil { sub.addItem(infoItem(Self.removeBlockedReason)) }
-    }
-
-    /// 환경 하위 메뉴의 실행 영역: 실행/중지 버튼, 진행 줄, 마지막 결과 줄.
-    /// 실행 버튼은 앱 전체에서 실행이 없고 환경 검사가 통과했을 때만 켠다(실행 불가 이유는 줄로 보여 준다).
-    private func addRunSection(to sub: NSMenu, env: PMHEnvironment, project: Project,
-                               check: EnvCheck?, runningHere: ActiveRun?) {
-        sub.addItem(.separator())
-        if let active = runningHere {
-            let line = infoItem(active.stopping ? "중지하는 중… (\(active.phase.text))" : active.phase.text)
-            progressItem = active.stopping ? nil : line
-            sub.addItem(line)
-            sub.addItem(ActionItem("중지", enabled: !active.stopping) { [weak self] in self?.controller.stop() })
-        } else {
-            let reason = RunEligibility.reason(for: check)
-            let busy = runSnapshot.active != nil
-            sub.addItem(ActionItem("pytest 실행", enabled: reason == nil && !busy) { [weak self] in
-                self?.runPytest(env, in: project)
-            })
-            if let reason = reason {
-                // 이유가 아래 문제 목록(조치 필요·오류 줄)과 같은 문장이면 두 번 보이지 않게 짧게 가리킨다.
-                // 목록에 없는 이유(검사 중 등)는 그대로 보여 준다. 빠뜨리면 실행이 왜 막혔는지 알 수 없다.
-                let listedBelow = check?.issues.contains { reason.contains($0.message) } ?? false
-                sub.addItem(infoItem(listedBelow ? "실행 불가: 아래 문제를 먼저 해결하세요." : "실행 불가: \(reason)"))
-            } else if busy {
-                sub.addItem(infoItem("다른 환경의 실행이 끝날 때까지 기다리세요(동시에 1건만 실행)."))
-            }
-        }
-        if let outcome = runSnapshot.results[env.id] {
-            sub.addItem(infoItem("마지막 결과: \(outcome.title)"))
-            if let detail = outcome.detail { sub.addItem(infoItem(detail)) }
-        }
-    }
-
-    // MARK: 동작
-
+    /// 환경 하나를 백그라운드에서 검사한다. 시작하면 결과를 지워 "검사 중"으로 보인다.
+    /// 완료 처리는 DispatchQueue.main으로 온다(EnvironmentChecker.checkAsync). 메인 큐는 common 모드에서 처리되므로
+    /// 팝오버 안 메뉴나 선택 창이 떠 있어도 결과가 바로 팝오버에 반영된다.
     private func recheck(_ env: PMHEnvironment) {
         checks[env.id] = nil
         checker.checkAsync(pythonPath: env.pythonPath) { [weak self] result in
@@ -457,161 +272,134 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             // 검사 도중 제거된 환경이면 결과를 버린다.
             let alive = self.registry.projects.contains { $0.environments.contains { $0.id == env.id } }
             if alive { self.checks[env.id] = result }
-            self.rebuildMenu()
+            self.pushPopoverState()
         }
     }
 
-    private func addProject() {
-        NSApp.activate(ignoringOtherApps: true)
-        let panel = NSOpenPanel()
-        panel.title = "프로젝트 폴더 선택"
-        panel.message = "pytest를 사용할 프로젝트 폴더를 고르세요. 폴더는 검사만 하며 테스트를 실행하지 않습니다."
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let path = url.path
-        if let existing = registry.projects.first(where: { $0.path == path }) {
-            addEnvironment(to: existing.id)
-            return
-        }
-        let project = Project(path: path)
-        registry.projects.append(project)
-        persist()
-        rebuildMenu()
-        addEnvironment(to: project.id)
-    }
-
-    /// 지금 실행 중인 환경 id. 동작 함수의 방어 확인에 쓴다.
-    /// 메뉴용 runSnapshot이 아니라 컨트롤러의 현재 상태를 읽는 이유: 알림이 메인에 닿기 전이라도
-    /// 방금 시작된 실행을 놓치지 않기 위함이다.
-    private var activeEnvID: String? { controller.snapshot.active?.envID }
-
-    /// 프로젝트 등록을 지운다(확인 창을 거친다).
-    /// 매개변수 id: 지울 프로젝트 id. 없는 id거나, 그 프로젝트의 환경이 실행 중이면 아무것도 하지 않는다.
-    private func removeProject(_ id: UUID) {
+    /// 프로젝트의 모든 환경을 다시 검사한다. 없는 id면 아무것도 하지 않는다.
+    private func recheckProject(_ id: UUID) {
         guard let project = registry.projects.first(where: { $0.id == id }) else { return }
-        // 메뉴에서 꺼 두지만, 메뉴가 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
-        let isRunning = { [weak self] in
-            guard let envID = self?.activeEnvID else { return false }
-            return project.environments.contains { $0.id == envID }
+        project.environments.forEach(recheck)
+        pushPopoverState()
+    }
+
+    /// 환경 하나를 다시 검사한다. 없는 id면 아무것도 하지 않는다.
+    private func recheckEnvironment(_ envID: String) {
+        for project in registry.projects {
+            if let env = project.environments.first(where: { $0.id == envID }) {
+                recheck(env)
+                pushPopoverState()
+                return
+            }
         }
-        if isRunning() { NSSound.beep(); return }
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "\(project.name) 등록을 제거할까요?"
-        alert.informativeText = "앱의 등록 정보만 지웁니다. 프로젝트 폴더와 Python 환경은 그대로 둡니다."
-        alert.addButton(withTitle: "제거")
-        alert.addButton(withTitle: "취소")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        // 확인 창이 떠 있는 동안 실행이 시작됐을 수 있어 한 번 더 확인한다.
-        if isRunning() { NSSound.beep(); return }
-        project.environments.forEach { checks[$0.id] = nil }
-        registry.projects.removeAll { $0.id == id }
-        persist()
-        rebuildMenu()
     }
 
-    /// 환경 등록을 지운다.
-    /// 매개변수 envID·projectID: 지울 환경과 그 프로젝트. 없는 id거나 그 환경이 실행 중이면 아무것도 하지 않는다.
-    private func removeEnvironment(_ envID: String, from projectID: UUID) {
-        // 메뉴에서 꺼 두지만, 메뉴가 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
-        if activeEnvID == envID { NSSound.beep(); return }
-        guard let i = registry.projects.firstIndex(where: { $0.id == projectID }) else { return }
-        registry.projects[i].environments.removeAll { $0.id == envID }
-        checks[envID] = nil
-        persist()
-        rebuildMenu()
+    // MARK: 등록 변경
+
+    /// "+ 프로젝트". 폴더 선택 창을 띄우고, 고른 폴더를 등록한 뒤 그 프로젝트의 환경 추가 폼을 연다.
+    /// 이미 등록한 폴더면 새로 등록하지 않고 그 프로젝트로 옮겨 폼만 연다(4단계 메뉴와 같은 동선).
+    /// 취소해도 팝오버는 다시 열린다(runPanelOutsidePopover).
+    private func addProject() {
+        runPanelOutsidePopover { [weak self] in
+            guard let self = self else { return }
+            let panel = NSOpenPanel()
+            panel.title = "프로젝트 폴더 선택"
+            panel.message = "pytest를 사용할 프로젝트 폴더를 고르세요. 폴더는 검사만 하며 테스트를 실행하지 않습니다."
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            let path = url.path
+            let projectID: UUID
+            if let existing = self.registry.projects.first(where: { $0.path == path }) {
+                projectID = existing.id
+            } else {
+                let project = Project(path: path)
+                self.registry.projects.append(project)
+                self.persist()
+                self.pushPopoverState()
+                projectID = project.id
+            }
+            self.popoverModel.selectProject(projectID)
+            self.popoverModel.openAddForm(for: projectID)
+        }
     }
 
-    private func addEnvironment(to projectID: UUID) {
-        guard let pi = registry.projects.firstIndex(where: { $0.id == projectID }) else { return }
-        let project = registry.projects[pi]
-        let registered = Set(project.environments.map(\.pythonPath))
-        let candidates = PythonCandidates.find(projectPath: project.path).filter { !registered.contains($0.path) }
-
-        NSApp.activate(ignoringOtherApps: true)
-        let form = EnvironmentForm(candidates: candidates)
-        let alert = NSAlert()
-        alert.messageText = "\(project.name)에 환경 추가"
-        alert.informativeText = "사용할 Python을 고르세요. 앱은 선택한 Python으로 정보를 읽기만 하고 환경을 바꾸지 않습니다."
-        alert.accessoryView = form.view
-        alert.addButton(withTitle: "추가")
-        alert.addButton(withTitle: "취소")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let pythonPath: String
-        if let candidate = form.selectedCandidate {
-            pythonPath = candidate.path
-        } else {
+    /// 폼의 "다른 파일 선택...". 숨김 파일을 보이고 ~/.venvs에서 시작한다. 고른 경로를 폼에 넣는다.
+    /// 취소하면 폼은 고르기 전 상태 그대로 다시 보인다.
+    private func choosePythonFile() {
+        runPanelOutsidePopover { [weak self] in
             let panel = NSOpenPanel()
             panel.title = "Python 실행 파일 선택"
             panel.message = "예: ~/.venvs/<이름>/bin/python"
             panel.canChooseFiles = true
             panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            // 가상환경의 bin/python은 숨김 폴더(.venv) 안에 있을 때가 많다.
             panel.showsHiddenFiles = true
             panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".venvs")
             guard panel.runModal() == .OK, let url = panel.url else { return }
-            pythonPath = url.path // 심볼릭 링크를 풀지 않는다(가상환경은 경로가 곧 환경이다).
+            self?.popoverModel.setFormCustomPath(url.path) // 심볼릭 링크를 풀지 않는다(가상환경은 경로가 곧 환경이다)
         }
-        if registered.contains(pythonPath) { return }
-        let typed = form.name.trimmingCharacters(in: .whitespaces)
-        let name = typed.isEmpty ? defaultEnvironmentName(forPython: pythonPath) : typed
+    }
+
+    /// 환경을 등록하고 검사를 시작한다.
+    /// - Parameters: projectID(대상 프로젝트), pythonPath, name(폼이 정리한 이름).
+    /// - Returns: 새 환경 id. 프로젝트가 없거나 같은 경로가 이미 있으면 nil(폼이 이유를 보여 준다).
+    private func addEnvironment(to projectID: UUID, pythonPath: String, name: String) -> String? {
+        guard let pi = registry.projects.firstIndex(where: { $0.id == projectID }) else { return nil }
+        // 폼에서 이미 확인하지만, 그사이 등록이 바뀌었을 때를 대비해 한 번 더 본다.
+        if registry.projects[pi].environments.contains(where: { $0.pythonPath == pythonPath }) { return nil }
         let env = PMHEnvironment(name: name, pythonPath: pythonPath)
         registry.projects[pi].environments.append(env)
         persist()
         recheck(env)
-        rebuildMenu()
+        pushPopoverState()
+        return env.id
     }
 
+    /// 지금 실행 중인 환경 id. 동작 함수의 방어 확인에 쓴다.
+    /// 화면용 runSnapshot이 아니라 컨트롤러의 현재 상태를 읽는 이유: 알림이 메인에 닿기 전이라도
+    /// 방금 시작된 실행을 놓치지 않기 위함이다.
+    private var activeEnvID: String? { controller.snapshot.active?.envID }
+
+    /// 프로젝트 등록을 지운다. 확인은 팝오버의 인라인 확인 상자에서 이미 받았다.
+    /// 매개변수 id: 지울 프로젝트 id. 없는 id거나, 그 프로젝트의 환경이 실행 중이면 아무것도 하지 않는다.
+    /// 화면에서 [제거]를 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때(방금 실행 시작)를 대비해 여기서도 막는다.
+    private func removeProject(_ id: UUID) {
+        guard let project = registry.projects.first(where: { $0.id == id }) else { return }
+        if ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: activeEnvID) != nil {
+            NSSound.beep(); return
+        }
+        project.environments.forEach { checks[$0.id] = nil }
+        registry.projects.removeAll { $0.id == id }
+        persist()
+        pushPopoverState()
+    }
+
+    /// 환경 등록을 지운다. 확인은 팝오버에서 이미 받았다.
+    /// 매개변수 envID·projectID: 지울 환경과 그 프로젝트. 없는 id거나 그 환경이 실행 중이면 아무것도 하지 않는다.
+    private func removeEnvironment(_ envID: String, from projectID: UUID) {
+        // 화면에서 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
+        if ManagementPresentation.environmentRemovalBlockedReason(envID: envID, activeEnvID: activeEnvID) != nil {
+            NSSound.beep(); return
+        }
+        guard let i = registry.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        registry.projects[i].environments.removeAll { $0.id == envID }
+        checks[envID] = nil
+        persist()
+        pushPopoverState()
+    }
+
+    /// 등록 파일에 저장한다. 실패하면 경고 창 대신 팝오버 위쪽에 문장을 보인다.
+    /// 경고 창(NSAlert)을 쓰지 않는 이유: 창이 뜨면 .transient 팝오버가 닫혀 하던 일이 끊긴다.
+    /// 메모리의 등록 정보는 바뀐 채로 두므로(예전과 같음), 다음 변경 때 다시 저장을 시도한다.
     private func persist() {
-        do { try store.save(registry) } catch {
-            let alert = NSAlert()
-            alert.messageText = "등록 정보를 저장하지 못했습니다"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
+        do {
+            try store.save(registry)
+            saveError = nil
+        } catch {
+            saveError = "등록 정보를 저장하지 못했습니다: \(error.localizedDescription)"
         }
-    }
-}
-
-/// "환경 추가" 창 안의 입력 폼: 후보 목록 + "다른 파일 선택..." + 이름.
-final class EnvironmentForm: NSObject {
-    let view = NSStackView()
-    private let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let nameField = NSTextField()
-    private let candidates: [PythonCandidate]
-    private var lastAutoName = ""
-
-    init(candidates: [PythonCandidate]) {
-        self.candidates = candidates
-        super.init()
-        for c in candidates { popup.addItem(withTitle: "\(c.label)  (\(c.path))") }
-        popup.addItem(withTitle: "다른 파일 선택...")
-        popup.target = self
-        popup.action = #selector(selectionChanged)
-        nameField.placeholderString = "환경 이름"
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 8
-        view.addArrangedSubview(popup)
-        view.addArrangedSubview(nameField)
-        view.frame = NSRect(x: 0, y: 0, width: 460, height: 56)
-        nameField.widthAnchor.constraint(equalToConstant: 300).isActive = true
-        selectionChanged()
-    }
-
-    var selectedCandidate: PythonCandidate? {
-        let i = popup.indexOfSelectedItem
-        return i >= 0 && i < candidates.count ? candidates[i] : nil
-    }
-    var name: String { nameField.stringValue }
-
-    @objc private func selectionChanged() {
-        // 사용자가 이름을 직접 고치지 않았을 때만 자동 이름을 갈아 끼운다.
-        let auto = selectedCandidate.map { defaultEnvironmentName(forPython: $0.path) } ?? ""
-        if nameField.stringValue.isEmpty || nameField.stringValue == lastAutoName {
-            nameField.stringValue = auto
-        }
-        lastAutoName = auto
     }
 }

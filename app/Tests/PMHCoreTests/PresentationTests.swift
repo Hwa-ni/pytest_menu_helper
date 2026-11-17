@@ -193,7 +193,10 @@ private func pluginMissingCheck() -> EnvCheck {
         // 실행 불가 이유가 지난 결과보다 먼저 보인다. 지난 결과의 진행 바는 남긴다.
         let snap = RunSnapshot(results: ["e1": .finished(try decodeSummary(realisticJSON))])
         row = ResultPresentation.row(env: env, check: pluginMissingCheck(), snapshot: snap, selected: false)
-        #expect(row.statusText == "실행 불가: 플러그인이 없습니다" && row.tone == .unavailable)
+        // 이유가 행 아래 조치 줄과 같은 문장이라 짧게 가리킨다. 전체 이유는 ▶ 도움말에 남는다.
+        #expect(row.statusText == "실행 불가: 아래 문제를 먼저 해결하세요." && row.tone == .unavailable)
+        #expect(row.actionHelp == "플러그인이 없습니다")
+        #expect(row.issues.map(\.text) == ["조치 필요: 플러그인이 없습니다"])
         #expect(row.action == .run(enabled: false))
         #expect(row.progressText == "4/7")
     }
