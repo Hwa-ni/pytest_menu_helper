@@ -127,8 +127,23 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
         state = "no_tests"
     elif finish.get("exit_code") not in (0, 1):
         state = "incomplete"
-    # 미실행이 하나라도 있으면 수집 수와 결과 수가 우연히 같아도(재실행 occurrence 등) 완료로 보지 않는다.
-    elif counts["incomplete"] or counts["not_run"] or finish.get("collected") != len(tests):
+    # 일부 단계만 보고된 테스트가 있으면 실패가 함께 있어도 미완료로 둔다.
+    # 이런 테스트는 판정 자체가 확정되지 않았고(teardown 누락, 이전 이벤트의 strict xpass 모호성 등)
+    # 이벤트 기록이 중간에 끊겼을 가능성도 있어 "실패로 끝난 실행"이라고 단정할 근거가 없다.
+    # 이 검사를 아래 조기 종료 규칙보다 먼저 두어야 한다. 순서를 바꾸면 끊긴 기록이 실패 판정으로 덮인다.
+    elif counts["incomplete"]:
+        state = "incomplete"
+    # -x, --maxfail처럼 실패 때문에 pytest가 스스로 멈춘 실행은 실패로 끝난 완료 실행으로 본다.
+    # 조건: 정상 종료(session_finish 있음, 중단·수집 오류 아님은 위 분기에서 이미 걸렀다),
+    # 종료 코드 1, 실패 또는 오류가 1건 이상. 이때 남은 테스트는 counts.not_run과 not_run 목록에
+    # 그대로 남아 화면이 "몇 건이 실행되지 않았는지" 보여 줄 수 있다.
+    # 종료 코드 1을 꼭 확인하는 이유: 0이면 pytest가 실패를 보고하지 않았다는 뜻이라 이벤트와 어긋나고,
+    # 그 밖의 코드는 위에서 이미 미완료로 처리했지만 조건을 명시해 두면 분기 순서가 바뀌어도 안전하다.
+    elif finish.get("exit_code") == 1 and (counts["failed"] or counts["error"]):
+        state = "completed"
+    # 실패·오류 없이 미실행만 남았다면 pytest가 실패로 멈춘 것이 아니므로(기록 누락 등) 완료로 보지 않는다.
+    # 수집 수와 결과 수가 다르면(재실행 occurrence가 우연히 맞춘 경우 제외) 역시 미완료다.
+    elif counts["not_run"] or finish.get("collected") != len(tests):
         state = "incomplete"
     else:
         state = "completed"

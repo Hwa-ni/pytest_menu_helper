@@ -4,6 +4,8 @@
 // 출력: 상태 변화 알림(RunSnapshot). 알림은 notifyQueue(앱에서는 메인 큐)로만 보낸다.
 // 스레드: 프로세스 실행, 이벤트 파일 읽기, 집계 호출은 모두 내부 백그라운드 큐에서 한다.
 //        메뉴가 응답하려면 메인 스레드에서 이 작업들을 기다리면 안 된다.
+//        예외는 앱 종료 때의 stopForTermination 하나뿐이다. 이 함수는 work 큐를 기다리지 않고
+//        잠금으로 보호한 자식 프로세스 참조만 써서, 정해진 상한 안에서 메인 스레드를 돌려준다.
 
 import Foundation
 
@@ -27,6 +29,14 @@ public final class RunController {
     private let lock = NSLock()
     private var state = RunSnapshot(active: nil, results: [:])
     private var context: Context?
+    /// 지금 살아 있을 수 있는 pytest 자식 프로세스. `lock`으로 보호한다.
+    /// work 큐 전용인 `context`와 따로 두는 이유: 앱 종료 때 메인 스레드가 work 큐를 기다리지 않고
+    /// 바로 신호를 보낼 수 있어야 한다. work 큐는 집계 호출(최대 30초) 중일 수 있어 work.sync를 쓰면
+    /// 종료가 그만큼 멈춘다.
+    private var runningProcess: Process?
+    /// 앱 종료가 시작됐는지. `lock`으로 보호한다. 켜진 뒤에는 새 자식 프로세스를 띄우지 않는다.
+    /// 빠뜨리면 start 직후 종료할 때, 종료 처리가 끝난 다음에 work 큐가 pytest를 띄워 앱보다 오래 남을 수 있다.
+    private var terminating = false
 
     private final class Context {
         let runID: String
@@ -93,6 +103,63 @@ public final class RunController {
         }
     }
 
+    /// 앱 종료 전용 동기 중지. 반환하기 전에 SIGINT를 실제로 보내고, 자식이 끝나기를 잠시 기다린다.
+    /// 그래도 살아 있으면 SIGKILL로 끝낸다. 일반 `stop()`은 work 큐에 넘기기만 해서, 앱이 바로 끝나면
+    /// 신호가 나가기 전에 프로세스가 사라질 수 있다. 이 함수는 그 문제를 막는다.
+    ///
+    /// 메인 스레드에서 불러도 안전하다. work 큐를 기다리지 않고(`work.sync` 없음) 잠금으로 보호한
+    /// `runningProcess`만 읽으므로, work 큐가 집계 중이어도 막히지 않고 데드락 경로도 없다.
+    /// 잠금은 짧게(값 읽기·쓰기만) 잡고, 기다리는 동안에는 잠금을 쥐지 않는다.
+    ///
+    /// - Parameter timeout: SIGINT 뒤 자식 종료를 기다릴 최대 시간(초). 메인 스레드를 오래 막지 않도록
+    ///   `maxTerminationWait`(5초)를 넘기면 그 값으로 줄이고, 음수는 0으로 본다.
+    ///   SIGKILL 뒤에는 이와 별도로 최대 `killWait`(0.5초)만 더 기다린다. 따라서 전체 상한은 약 5.5초다.
+    /// - Returns: 반환 시점에 자식이 없거나 끝났으면 true. SIGKILL 뒤에도 끝난 것을 확인하지 못했으면 false.
+    ///   실패해도 예외를 던지지 않는다(앱은 어차피 종료 중이라 할 수 있는 일이 없다).
+    /// 이 함수를 부른 뒤에는 새 실행이 시작되지 않는다(launch가 `terminating`을 보고 거절한다).
+    @discardableResult
+    public func stopForTermination(timeout: TimeInterval = RunController.terminationWait) -> Bool {
+        lock.lock()
+        terminating = true
+        let process = runningProcess
+        lock.unlock()
+        // 실행 중이 아니거나 이미 끝난 프로세스면 보낼 신호가 없다.
+        guard let process = process, process.isRunning else { return true }
+        let pid = process.processIdentifier
+        kill(pid, SIGINT)
+        let wait = min(max(timeout, 0), Self.maxTerminationWait)
+        if Self.waitForExit(process, seconds: wait) { return true }
+        // isRunning을 다시 확인한 뒤 보낸다. 이미 끝나 회수된 pid는 다른 프로세스가 재사용할 수 있어서다.
+        if process.isRunning { kill(pid, SIGKILL) }
+        return Self.waitForExit(process, seconds: Self.killWait)
+    }
+
+    /// 앱 종료 때 SIGINT 뒤 기다리는 기본 시간(초). pytest가 중단 이벤트를 남기고 끝나기에 보통 충분하다.
+    public static let terminationWait: TimeInterval = 2.5
+    /// stopForTermination이 SIGINT 뒤 기다릴 수 있는 최대 시간(초). 메인 스레드를 오래 막지 않기 위한 상한이다.
+    public static let maxTerminationWait: TimeInterval = 5
+    /// SIGKILL 뒤 종료 확인을 기다리는 시간(초). SIGKILL은 막을 수 없어 보통 수 밀리초 안에 끝난다.
+    static let killWait: TimeInterval = 0.5
+
+    /// 프로세스가 끝날 때까지 짧은 간격(20ms)으로 확인하며 최대 `seconds`초 기다린다.
+    /// 런루프나 work 큐에 기대지 않는 바쁜 대기 대신 sleep을 쓰는 이유: 메인 스레드에서 불려도
+    /// 다른 큐의 도움 없이 끝나야 하기 때문이다. Process.isRunning은 Foundation 내부 큐가 갱신한다.
+    /// - Returns: 기다리는 안에 끝났으면 true, 시간이 다 되도록 살아 있으면 false.
+    private static func waitForExit(_ process: Process, seconds: TimeInterval) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while process.isRunning {
+            if Date() >= end { return false }
+            usleep(20_000)
+        }
+        return true
+    }
+
+    /// 테스트용: 지금 등록된 자식 프로세스의 pid(없으면 nil).
+    var childPID: pid_t? {
+        lock.lock(); defer { lock.unlock() }
+        return runningProcess?.processIdentifier
+    }
+
     // MARK: 내부(work 큐에서만)
 
     private func launch(runID: String, envID: String, pythonPath: String, projectPath: String) {
@@ -121,7 +188,17 @@ public final class RunController {
             p.standardOutput = log
             p.standardError = log
             p.terminationHandler = { [weak self] _ in self?.work.async { self?.finish(ctx, envID: envID, pythonPath: pythonPath) } }
-            try p.run()
+            // 종료 여부 확인, 프로세스 시작, 참조 등록을 한 잠금 안에서 한다.
+            // 따로 하면 그 사이에 stopForTermination이 끼어들어, 아직 등록 전인 자식을 놓친 채
+            // 앱이 끝날 수 있다. p.run()은 생성만 하고 바로 돌아오므로 잠금을 오래 쥐지 않는다.
+            lock.lock()
+            if terminating {
+                lock.unlock()
+                throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: "앱이 종료되는 중입니다."])
+            }
+            do { try p.run() } catch { lock.unlock(); throw error }
+            runningProcess = p
+            lock.unlock()
         } catch {
             try? ctx.logHandle?.close()
             context = nil
@@ -162,6 +239,10 @@ public final class RunController {
     /// 3) 종료 이벤트가 없으면 미완료, 4) 그 외에는 집계기에 판정을 맡긴다.
     /// 종료 이벤트 없는 실행을 집계기에 넘기지 않는 이유: 강제 종료로 마지막 줄이 잘렸을 수 있어 집계가 오류를 낼 수 있다.
     private func finish(_ ctx: Context, envID: String, pythonPath: String) {
+        // 끝난 프로세스는 더 이상 신호 대상이 아니다. 같은 객체일 때만 지운다(다른 실행의 참조를 지우지 않도록).
+        lock.lock()
+        if runningProcess === ctx.process { runningProcess = nil }
+        lock.unlock()
         ctx.timer?.cancel()
         ctx.timer = nil
         poll(ctx) // 종료 직전에 쓰인 마지막 이벤트까지 읽는다.

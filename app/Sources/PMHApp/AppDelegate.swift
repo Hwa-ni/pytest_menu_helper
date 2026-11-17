@@ -1,3 +1,10 @@
+// AppDelegate.swift
+// 메뉴 막대 앱의 본체. 프로젝트·환경 등록 메뉴를 만들고, pytest 실행 상태를 메뉴에 보여 준다.
+// 입력: 등록 파일(ProjectStore), 환경 검사 결과(EnvironmentChecker), 실행 상태 알림(RunController).
+// 출력: 상태 막대 메뉴, 등록 파일 저장, pytest 실행·중지 요청.
+// 실행 중인 환경과 그 환경이 속한 프로젝트는 제거할 수 없다. 제거하면 메뉴에서 "중지"가 사라지고
+// 그 실행이 끝날 때까지 다른 환경의 실행 버튼도 꺼진 채 남기 때문이다.
+
 import AppKit
 import PMHCore
 
@@ -48,6 +55,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     /// 환경 id → 지금 메뉴에 걸린 항목. rebuildMenu가 매번 새로 채운다.
     private var envMenus: [String: EnvMenu] = [:]
+
+    /// 프로젝트 하위 메뉴의 "프로젝트 제거" 항목과 그 아래 이유 줄.
+    /// 실행 상태가 바뀌면 메뉴를 다시 만들지 않고 이 두 항목의 켜짐·숨김만 고친다(열린 메뉴에도 보이도록).
+    private struct ProjectMenu {
+        let removeItem: NSMenuItem
+        let reasonItem: NSMenuItem
+        let project: Project
+    }
+    /// 프로젝트 id → 지금 메뉴에 걸린 제거 항목. rebuildMenu가 매번 새로 채운다.
+    private var projectMenus: [UUID: ProjectMenu] = [:]
+    /// 실행 중이라 제거를 막을 때 보여 주는 이유 문장.
+    private static let removeBlockedReason = "실행 중에는 제거할 수 없습니다. 먼저 중지하세요."
     /// 메뉴가 열려 있는지. 열려 있는 동안에는 메뉴 전체를 바꿔 끼우지 않는다.
     private var menuIsOpen = false
     /// 메뉴가 열려 있어 미뤄 둔 전체 다시 만들기가 있는지. 메뉴가 닫히면 처리한다.
@@ -71,9 +90,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.cleanup()
     }
 
-    /// 앱을 끄면 실행 중인 pytest에 중지 신호(SIGINT)를 보낸다. 자식이 앱보다 오래 남지 않게 하는 최선의 시도다.
+    /// 앱을 끄면 실행 중인 pytest를 끝내고 나서 돌아온다.
+    /// 일반 stop()을 쓰면 안 되는 이유: 신호를 백그라운드 큐에 넘기기만 해서, 이 함수가 돌아온 직후
+    /// 앱 프로세스가 끝나면 SIGINT가 나가지 못하고 pytest가 남는다.
+    /// stopForTermination은 SIGINT를 바로 보내고 최대 2.5초 기다린 뒤, 남아 있으면 SIGKILL한다.
+    /// 메인 스레드를 막는 시간은 실행이 없으면 0, 있어도 약 3초 안이다.
     func applicationWillTerminate(_ notification: Notification) {
-        controller.stop()
+        controller.stopForTermination()
     }
 
     // MARK: pytest 실행 상태
@@ -108,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 모든 환경 항목의 제목과 하위 메뉴 내용을 지금 상태로 다시 채운다(메뉴 객체는 그대로 둔다).
+    /// 프로젝트 하위 메뉴의 "프로젝트 제거" 항목도 함께 고친다. 실행이 끝나면 여기서 다시 켜진다.
     private func refreshRunSections() {
         progressItem = nil // 새로 채우는 진행 줄이 다시 지정한다. 지우지 않으면 사라진 줄을 계속 고친다.
         for ref in envMenus.values {
@@ -115,6 +139,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ref.sub.removeAllItems()
             fillEnvironmentMenu(ref.sub, env: ref.env, project: ref.project)
         }
+        for ref in projectMenus.values { updateProjectRemoveItems(ref) }
+    }
+
+    /// 실행 중인 환경이 이 프로젝트에 있는지. 메뉴 표시에 쓰므로 메뉴가 아는 상태(runSnapshot)로 판단한다.
+    private func projectHasActiveRun(_ project: Project) -> Bool {
+        guard let active = runSnapshot.active else { return false }
+        return project.environments.contains { $0.id == active.envID }
+    }
+
+    /// "프로젝트 제거" 항목을 실행 상태에 맞춘다. 실행 중이면 끄고 이유 줄을 보이고, 아니면 켜고 이유 줄을 숨긴다.
+    /// 이유 줄을 지웠다 넣지 않고 숨기는 이유: 열린 메뉴에서 항목 순서를 바꾸지 않고 그 자리에서 바꾸기 위함이다.
+    private func updateProjectRemoveItems(_ ref: ProjectMenu) {
+        let blocked = projectHasActiveRun(ref.project)
+        ref.removeItem.isEnabled = !blocked
+        ref.reasonItem.isHidden = !blocked
     }
 
     // MARK: NSMenuDelegate (최상위 메뉴만)
@@ -169,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         envMenus = [:]
+        projectMenus = [:]
         progressItem = nil
         let menu = NSMenu()
         menu.delegate = self
@@ -188,6 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let summary = ProjectSummary.summarize(project.environments.map { checks[$0.id] })
         let item = NSMenuItem(title: "\(project.name) — \(summary.label)", action: nil, keyEquivalent: "")
         let sub = NSMenu()
+        // 자동 활성화를 끄지 않으면 "프로젝트 제거"의 비활성 지정이 무시되어 실행 중에도 켜진다.
+        sub.autoenablesItems = false
         sub.addItem(infoItem(project.path))
         sub.addItem(.separator())
         if project.environments.isEmpty {
@@ -201,7 +243,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.rebuildMenu()
         })
         sub.addItem(.separator())
-        sub.addItem(ActionItem("프로젝트 제거") { [weak self] in self?.removeProject(project.id) })
+        let remove = ActionItem("프로젝트 제거") { [weak self] in self?.removeProject(project.id) }
+        let reason = infoItem(Self.removeBlockedReason)
+        sub.addItem(remove)
+        sub.addItem(reason)
+        let ref = ProjectMenu(removeItem: remove, reasonItem: reason, project: project)
+        updateProjectRemoveItems(ref)
+        projectMenus[project.id] = ref
         item.submenu = sub
         return item
     }
@@ -257,7 +305,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.recheck(env)
             self?.rebuildMenu()
         })
-        sub.addItem(ActionItem("환경 제거") { [weak self] in self?.removeEnvironment(env.id, from: project.id) })
+        // 실행 중인 환경은 제거를 막는다. 제거하면 envMenus에서 빠져 "중지" 버튼에 닿을 수 없게 된다.
+        // 이 함수는 실행 상태가 바뀔 때마다 다시 불리므로(refreshRunSections), 실행이 끝나면 다시 켜진다.
+        sub.addItem(ActionItem("환경 제거", enabled: runningHere == nil) { [weak self] in
+            self?.removeEnvironment(env.id, from: project.id)
+        })
+        if runningHere != nil { sub.addItem(infoItem(Self.removeBlockedReason)) }
     }
 
     /// 환경 하위 메뉴의 실행 영역: 실행/중지 버튼, 진행 줄, 마지막 결과 줄.
@@ -325,8 +378,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addEnvironment(to: project.id)
     }
 
+    /// 지금 실행 중인 환경 id. 동작 함수의 방어 확인에 쓴다.
+    /// 메뉴용 runSnapshot이 아니라 컨트롤러의 현재 상태를 읽는 이유: 알림이 메인에 닿기 전이라도
+    /// 방금 시작된 실행을 놓치지 않기 위함이다.
+    private var activeEnvID: String? { controller.snapshot.active?.envID }
+
+    /// 프로젝트 등록을 지운다(확인 창을 거친다).
+    /// 매개변수 id: 지울 프로젝트 id. 없는 id거나, 그 프로젝트의 환경이 실행 중이면 아무것도 하지 않는다.
     private func removeProject(_ id: UUID) {
         guard let project = registry.projects.first(where: { $0.id == id }) else { return }
+        // 메뉴에서 꺼 두지만, 메뉴가 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
+        let isRunning = { [weak self] in
+            guard let envID = self?.activeEnvID else { return false }
+            return project.environments.contains { $0.id == envID }
+        }
+        if isRunning() { NSSound.beep(); return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "\(project.name) 등록을 제거할까요?"
@@ -334,13 +400,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "제거")
         alert.addButton(withTitle: "취소")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // 확인 창이 떠 있는 동안 실행이 시작됐을 수 있어 한 번 더 확인한다.
+        if isRunning() { NSSound.beep(); return }
         project.environments.forEach { checks[$0.id] = nil }
         registry.projects.removeAll { $0.id == id }
         persist()
         rebuildMenu()
     }
 
+    /// 환경 등록을 지운다.
+    /// 매개변수 envID·projectID: 지울 환경과 그 프로젝트. 없는 id거나 그 환경이 실행 중이면 아무것도 하지 않는다.
     private func removeEnvironment(_ envID: String, from projectID: UUID) {
+        // 메뉴에서 꺼 두지만, 메뉴가 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
+        if activeEnvID == envID { NSSound.beep(); return }
         guard let i = registry.projects.firstIndex(where: { $0.id == projectID }) else { return }
         registry.projects[i].environments.removeAll { $0.id == envID }
         checks[envID] = nil

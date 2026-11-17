@@ -233,6 +233,11 @@ private final class Fixture {
         trap '' INT
         ev session_start; ev session_collected ',"nodeids":["a"]'
         while true; do sleep 0.1; done ;;
+      intexit)
+        # SIGINT를 받으면 코드 2로 끝난다. 종료 직전 중지가 SIGKILL이 아니라 SIGINT로 끝냈는지 가리기 위함이다.
+        trap 'exit 2' INT
+        ev session_start; ev session_collected ',"nodeids":["a"]'
+        while true; do sleep 0.1; done ;;
       noevents) echo "boom: cannot import plugin"; exit 3 ;;
       killed) ev session_start; kill -9 $$ ;;
       foreign) (RID=00000000-0000-4000-8000-000000000000; ev session_start); ev session_start; (RID=00000000-0000-4000-8000-000000000000; ev session_finish ',"exit_code":0') ;;
@@ -393,6 +398,98 @@ private func waitUntil(_ seconds: Double = 10, _ cond: () -> Bool) async -> Bool
         let names = try FileManager.default.contentsOfDirectory(atPath: fx.paths.eventsDir.path)
         #expect(names.filter { FileCleaner.isRunFile($0, ext: "jsonl") }.count == 2)
         #expect(names.contains("custom.jsonl"))
+    }
+}
+
+/// 앱 종료 전용 동기 중지(stopForTermination)를 확인한다.
+/// 핵심은 "반환한 시점에 이미 신호가 나갔고 자식이 끝났는가"이다. 앱은 반환 직후 프로세스를 끝내므로
+/// 비동기로 미뤄진 신호는 의미가 없다. 그래서 반환 직후의 상태를 바로 확인한다(기다리지 않음).
+@Suite struct TerminationStopTests {
+    /// 자식 pid가 아직 살아 있는지(좀비 포함). 회수되기 전 좀비도 kill(pid, 0)이 성공하므로
+    /// "끝났다"는 판단은 Process.isRunning과 결과 기록으로 한다. 이 함수는 시작 확인에만 쓴다.
+    private func alive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+
+    @Test func idleControllerReturnsImmediately() {
+        let c = RunController(paths: AppPaths(base: tempDir()), notifyQueue: DispatchQueue(label: "t"), onChange: { _ in })
+        let t0 = Date()
+        #expect(c.stopForTermination(timeout: 3))
+        #expect(Date().timeIntervalSince(t0) < 0.5)
+    }
+
+    @Test func sigintIsSentBeforeReturningAndChildExitsGracefully() async throws {
+        let fx = try Fixture(mode: "intexit")
+        let c = fx.controller()
+        _ = c.start(envID: "e", pythonPath: fx.python.path, projectPath: fx.project.path)
+        #expect(await waitUntil { c.snapshot.active?.phase == .running(done: 0, total: 1) })
+        let pid = try #require(c.childPID)
+        #expect(alive(pid))
+        let t0 = Date()
+        #expect(c.stopForTermination(timeout: 3)) // 반환 시점에 이미 끝나 있어야 한다
+        #expect(Date().timeIntervalSince(t0) < 2) // SIGINT로 바로 끝나므로 기다림 상한까지 가지 않는다
+        #expect(await waitUntil { c.snapshot.active == nil })
+        guard case .incomplete(let t, _, _, _)? = c.snapshot.results["e"] else {
+            Issue.record("결과: \(String(describing: c.snapshot.results["e"]))"); return
+        }
+        #expect(t == .exit(2)) // SIGKILL(시그널 9)이 아니라 SIGINT 처리로 끝났다
+    }
+
+    @Test func childIgnoringSigintIsKilledWithinTimeout() async throws {
+        let fx = try Fixture(mode: "hang")
+        let c = fx.controller(grace: 60) // 일반 stop의 유예 시간이 끼어들지 않게 길게 둔다
+        _ = c.start(envID: "e", pythonPath: fx.python.path, projectPath: fx.project.path)
+        #expect(await waitUntil { c.snapshot.active?.phase == .running(done: 0, total: 1) })
+        let t0 = Date()
+        #expect(c.stopForTermination(timeout: 0.5))
+        let elapsed = Date().timeIntervalSince(t0)
+        #expect(elapsed >= 0.4 && elapsed < 1.5) // SIGINT 뒤 0.5초 기다린 다음 SIGKILL
+        #expect(await waitUntil { c.snapshot.active == nil })
+        guard case .incomplete(let t, _, _, _)? = c.snapshot.results["e"] else {
+            Issue.record("결과: \(String(describing: c.snapshot.results["e"]))"); return
+        }
+        #expect(t == .signal(9))
+    }
+
+    /// 메인 스레드에서 불러도 끝나는지 확인한다(앱은 applicationWillTerminate에서 메인으로 부른다).
+    /// 종료 확인이 메인 런루프나 work 큐에 기대면 여기서 멈춘다.
+    @MainActor @Test func worksWhenCalledOnMainThread() async throws {
+        let fx = try Fixture(mode: "hang")
+        let c = fx.controller(grace: 60)
+        _ = c.start(envID: "e", pythonPath: fx.python.path, projectPath: fx.project.path)
+        // 진행 줄이 나올 때까지 기다린다. 가짜 스크립트가 SIGINT 무시(trap)를 걸기 전에 신호가 가면
+        // 기본 동작으로 바로 끝나 버려, 기다림과 SIGKILL 경로를 확인하지 못한다.
+        #expect(await waitUntil { c.snapshot.active?.phase == .running(done: 0, total: 1) })
+        #expect(pthread_main_np() != 0) // 정말 메인 스레드에서 부르는지(Thread.isMainThread는 async 문맥에서 쓸 수 없다)
+        let t0 = Date()
+        #expect(c.stopForTermination(timeout: 0.3))
+        let elapsed = Date().timeIntervalSince(t0)
+        #expect(elapsed >= 0.25 && elapsed < 1.5) // SIGINT 뒤 0.3초 기다리고 SIGKILL로 끝냈다
+    }
+
+    @Test func timeoutIsCappedSoMainThreadIsNotBlockedLong() async throws {
+        let fx = try Fixture(mode: "hang")
+        let c = fx.controller(grace: 60)
+        _ = c.start(envID: "e", pythonPath: fx.python.path, projectPath: fx.project.path)
+        // 위 테스트와 같은 이유로 trap이 걸린 뒤(진행 줄이 나온 뒤)에 부른다.
+        #expect(await waitUntil { c.snapshot.active?.phase == .running(done: 0, total: 1) })
+        let t0 = Date()
+        #expect(c.stopForTermination(timeout: 1000))
+        // 1000초를 달라고 해도 상한 5초만 기다리고, SIGKILL 확인 0.5초 안에 돌아온다.
+        let elapsed = Date().timeIntervalSince(t0)
+        #expect(elapsed >= RunController.maxTerminationWait - 0.1)
+        #expect(elapsed < RunController.maxTerminationWait + 1)
+    }
+
+    @Test func noNewRunIsLaunchedAfterTerminationStarts() async throws {
+        let fx = try Fixture(mode: "hang")
+        let c = fx.controller()
+        #expect(c.stopForTermination())
+        // 종료가 시작된 뒤의 시작 요청은 자식을 띄우지 않고 실행 오류로 끝난다.
+        _ = c.start(envID: "e", pythonPath: fx.python.path, projectPath: fx.project.path)
+        #expect(await waitUntil { c.snapshot.active == nil })
+        guard case .launchFailed? = c.snapshot.results["e"] else {
+            Issue.record("결과: \(String(describing: c.snapshot.results["e"]))"); return
+        }
+        #expect(c.childPID == nil)
     }
 }
 

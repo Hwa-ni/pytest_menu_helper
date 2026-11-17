@@ -157,15 +157,77 @@ def test_same_test_file_selected_twice(tmp_path):
     assert [test['occurrence'] for test in summary['tests']] == [1, 2]
 
 
-def test_stop_after_first_failure_is_incomplete(tmp_path):
+def test_stop_after_first_failure_is_failed_with_not_run(tmp_path):
+    """-x로 첫 실패에서 멈춘 실제 실행은 미완료가 아니라 실패로 끝난 완료 실행이어야 한다.
+
+    뒤에 남은 테스트는 판정을 바꾸지 않고 counts.not_run과 not_run 목록에만 남는다.
+    """
     result, events = run_case(tmp_path, 'def test_fail(): assert False\ndef test_other(): pass\n', '-x')
     assert result.returncode == 1
     summary = aggregate(events)
-    assert summary['state'] == 'incomplete'
+    assert summary['state'] == 'completed' and summary['verdict'] == 'failed'
     assert summary['counts']['failed'] == 1
     # -x로 멈추면 뒤의 테스트는 결과 이벤트가 없으므로 미실행으로 센다.
     assert summary['counts']['not_run'] == 1
     assert summary['not_run'] == ['test_sample.py::test_other']
+
+
+MAXFAIL_SOURCE = """import pytest
+
+@pytest.fixture
+def broken():
+    raise RuntimeError('setup')
+
+def test_first_fail(): assert False
+def test_pass(): pass
+def test_setup_error(broken): pass
+def test_after_a(): pass
+def test_after_b(): pass
+"""
+
+
+def test_maxfail_two_counts_error_and_keeps_not_run(tmp_path):
+    """--maxfail=2에서 실패 1건과 setup 오류 1건으로 멈춘 실제 실행을 본다.
+
+    pytest는 오류도 maxfail에 세므로 두 번째 문제(오류)에서 멈춘다. 실패·오류가 섞여도
+    completed/failed이고, 남은 두 테스트는 수집 순서대로 not_run에 담겨야 한다.
+    """
+    result, events = run_case(tmp_path, MAXFAIL_SOURCE, '--maxfail=2')
+    assert result.returncode == 1
+    summary = aggregate(events)
+    assert summary['state'] == 'completed' and summary['verdict'] == 'failed'
+    assert summary['counts']['failed'] == 1 and summary['counts']['error'] == 1
+    assert summary['counts']['passed'] == 1 and summary['counts']['incomplete'] == 0
+    assert summary['counts']['not_run'] == 2
+    assert summary['not_run'] == ['test_sample.py::test_after_a', 'test_sample.py::test_after_b']
+
+
+def test_not_run_without_failures_stays_incomplete(tmp_path):
+    """실패·오류 없이 미실행만 남은 실행은 여전히 미완료여야 한다.
+
+    실제 -x 실행에서 실패한 테스트의 이벤트를 지워, "종료 코드 1인데 결과에 실패가 없고
+    미실행만 있는" 기록(중간 기록 누락과 같은 모양)을 만든다. 실패로 멈췄다는 근거가 없으므로
+    조기 종료 규칙이 적용되면 안 된다.
+    """
+    _, events = run_case(tmp_path, 'def test_fail(): assert False\ndef test_other(): pass\n', '-x')
+    without_failure = [e for e in events if e.get('nodeid') != 'test_sample.py::test_fail']
+    summary = aggregate(without_failure)
+    assert summary['state'] == 'incomplete' and summary['verdict'] is None
+    assert summary['counts']['failed'] == 0 and summary['counts']['not_run'] == 2
+
+
+def test_partial_phases_with_failure_stay_incomplete(tmp_path):
+    """실패가 있어도 일부 단계만 보고된 테스트가 섞이면 미완료로 둔다.
+
+    실제 --maxfail=2 실행에서 setup 오류 테스트의 teardown만 지워 counts.incomplete를 1로 만든다.
+    판정이 확정되지 않은 테스트가 있으므로 실패로 끝났다고 단정하지 않는다.
+    """
+    _, events = run_case(tmp_path, MAXFAIL_SOURCE, '--maxfail=2')
+    cut = [e for e in events
+           if not (e.get('nodeid') == 'test_sample.py::test_setup_error' and e.get('phase') == 'teardown')]
+    summary = aggregate(cut)
+    assert summary['counts']['failed'] == 1 and summary['counts']['incomplete'] == 1
+    assert summary['state'] == 'incomplete' and summary['verdict'] is None
 
 
 def test_interrupt_counts_not_run_tests(tmp_path):

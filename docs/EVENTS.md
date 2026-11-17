@@ -81,9 +81,9 @@ pytest가 `KeyboardInterrupt`를 감지한 경우 기록하며 v2는 `reason: "k
 
 `python -m pytest_menu_helper.aggregate PATH`는 JSONL의 마지막 실행을 JSON으로 출력합니다. `state`는 `waiting`, `running`, `completed`, `no_tests`, `collection_error`, `interrupted`, `incomplete` 중 하나이고, 정상 완료의 `verdict`는 `passed`, `failed`, `attention` 중 하나입니다. 그 외 실행의 `verdict`는 `null`입니다.
 
-실패·오류가 있으면 `failed`, 전부 실제 통과한 테스트가 1건 이상이면 `passed`, skip·xfail·xpass 등이 있으면 `attention`입니다. 강제 종료·종료 이벤트 누락·일부 테스트 단계 누락은 `incomplete`입니다. 이전 이벤트의 종료 코드 2만으로 중단을 단정하지 않습니다. `running`은 Python API `aggregate(events, process_running=True)`로 프로세스가 실제로 실행 중임을 호출자가 전달해야 합니다.
+실패·오류가 있으면 `failed`, 전부 실제 통과한 테스트가 1건 이상이면 `passed`, skip·xfail·xpass 등이 있으면 `attention`입니다. 강제 종료·종료 이벤트 누락·일부 테스트 단계 누락은 `incomplete`입니다(실패로 멈춘 실행의 미실행 처리는 아래). 이전 이벤트의 종료 코드 2만으로 중단을 단정하지 않습니다. `running`은 Python API `aggregate(events, process_running=True)`로 프로세스가 실제로 실행 중임을 호출자가 전달해야 합니다.
 
-`counts`에는 테스트 상태별 수와 함께 `not_run`(미실행)이 들어갑니다. 수집됐지만 setup·call·teardown 어느 단계도 보고되지 않은 테스트 수이며, 중지(Ctrl+C)나 `-x`처럼 도중에 끝난 실행에서 수집 수와 합계가 맞지 않는 이유를 보여 줍니다. 한 단계라도 보고된 테스트는 `incomplete`로 세므로 둘은 겹치지 않습니다. 해당 nodeid는 최상위 `not_run` 목록에 수집 순서대로 담깁니다. `session_collected`가 없는 이전 이벤트는 `session_finish.collected`와의 차이로 수만 세고 목록은 비워 둡니다. 미실행이 1건이라도 있으면 `completed`가 아닙니다.
+`counts`에는 테스트 상태별 수와 함께 `not_run`(미실행)이 들어갑니다. 수집됐지만 setup·call·teardown 어느 단계도 보고되지 않은 테스트 수이며, 중지(Ctrl+C)나 `-x`처럼 도중에 끝난 실행에서 수집 수와 합계가 맞지 않는 이유를 보여 줍니다. 한 단계라도 보고된 테스트는 `incomplete`로 세므로 둘은 겹치지 않습니다. 해당 nodeid는 최상위 `not_run` 목록에 수집 순서대로 담깁니다. `session_collected`가 없는 이전 이벤트는 `session_finish.collected`와의 차이로 수만 세고 목록은 비워 둡니다. `-x`, `--maxfail`처럼 실패 때문에 pytest가 스스로 멈춘 실행은 미실행이 남아 있어도 `state: completed`, `verdict: failed`입니다. 조건은 `session_finish`가 있고, 중단(`interrupted`)·수집 오류가 아니며, `exit_code`가 1이고, 실패(`failed`) 또는 오류(`error`)가 1건 이상인 경우입니다. 이때도 `counts.not_run`과 `not_run` 목록은 그대로 담깁니다. 실패·오류 없이 미실행만 남은 실행, 일부 단계만 보고된 테스트(`counts.incomplete`)가 있는 실행은 실패가 있더라도 `incomplete`입니다. Ctrl+C 중단은 미실행 여부와 관계없이 `interrupted`입니다.
 
 불완전한 JSON 줄이나 섞인 실행, 중복 단계 등은 오류를 반환합니다. 실시간으로 쓰는 파일의 부분 줄 처리는 앱이 합니다(아래). 동시 실행은 9단계입니다.
 
