@@ -1,6 +1,6 @@
 // PopoverView.swift
 // 메뉴 막대 아이콘을 왼쪽 클릭하면 열리는 팝오버의 SwiftUI 화면. 앱의 모든 동작이 이 화면 안에 있다
-// (결과 목록과 실패 상세, 프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 종료).
+// (결과 목록과 실패 상세, 프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 캐릭터 보이기, 종료).
 // 입력: PopoverViewModel이 들고 있는 PopoverState(PMHCore의 ResultPresentation이 만든 값)와
 // 화면 안 상태(환경 추가 폼, 제거 확인, 펼친 실패 항목, 알림 문장).
 // 출력: 사용자 동작을 뷰 모델의 콜백으로 넘긴다. 등록 파일 저장·검사·파일 선택 창은 AppDelegate가 한다.
@@ -33,6 +33,8 @@ final class PopoverViewModel: ObservableObject {
     @Published private(set) var notices: [String] = []
     /// 방금 복사한 명령. 버튼 글자를 잠깐 "복사됨"으로 바꾸는 데 쓴다.
     @Published private(set) var copiedCommand: String?
+    /// 캐릭터 창을 보이는지(7단계). 맨 아래 [캐릭터 보이기] 체크 상자에 쓴다. 저장은 AppDelegate(onToggleCharacter)가 한다.
+    @Published private(set) var characterVisible = true
 
     /// 실행(▶) 요청. 매개변수는 환경 id.
     var onRun: (String) -> Void = { _ in }
@@ -54,6 +56,8 @@ final class PopoverViewModel: ObservableObject {
     var onCopy: (String) -> Void = { _ in }
     /// [종료].
     var onQuit: () -> Void = {}
+    /// [캐릭터 보이기] 체크 상자. 매개변수는 새 값. 창을 보이거나 숨기고 설정을 저장하는 일은 AppDelegate가 한다.
+    var onToggleCharacter: (Bool) -> Void = { _ in }
 
     private var registry = Registry()
     private var checks: [String: EnvCheck] = [:]
@@ -81,6 +85,21 @@ final class PopoverViewModel: ObservableObject {
         form = nil
         removalTarget = nil
         recompute()
+    }
+
+    /// 캐릭터를 눌러 열 때 부른다. 캐릭터가 따르던 환경과 그 프로젝트를 골라 상세에 바로 보여 준다.
+    /// 매개변수 envID: 캐릭터가 따르는 환경 id. nil이거나 등록에 없으면 기본 선택(prepareForFreshOpen 결과)을 그대로 둔다.
+    func focusEnvironment(_ envID: String?) {
+        guard let envID = envID,
+              let project = registry.projects.first(where: { p in p.environments.contains { $0.id == envID } }) else { return }
+        preferredProjectID = project.id
+        preferredEnvID = envID
+        recompute()
+    }
+
+    /// 캐릭터 보이기 값을 화면에 반영한다(AppDelegate가 저장한 값을 넣는다). 같은 값이면 다시 그리지 않는다.
+    func setCharacterVisible(_ visible: Bool) {
+        if characterVisible != visible { characterVisible = visible }
     }
 
     /// 프로젝트를 바꾸면 환경 선택은 새 프로젝트의 기본값으로 돌린다(다른 프로젝트의 환경 id가 남지 않게).
@@ -249,6 +268,12 @@ struct PopoverRootView: View {
             }
             Divider()
             HStack {
+                // 7단계 캐릭터 켜고 끄기(사용자 결정 1=A, 기본은 보임). @State를 쓸 수 없어(SwiftUIMacros 없음)
+                // 뷰 모델 값을 읽고 쓰는 Binding을 직접 만든다. 값은 AppDelegate가 저장하고 다시 넣어 준다.
+                Toggle("캐릭터 보이기", isOn: Binding(get: { model.characterVisible },
+                                                    set: { model.onToggleCharacter($0) }))
+                    .toggleStyle(.checkbox)
+                    .help("화면 구석의 여우 캐릭터를 보이거나 숨깁니다. 캐릭터를 누르면 이 팝오버가 열립니다.")
                 Spacer()
                 Button("종료") { model.onQuit() }.help("앱을 종료합니다. 실행 중인 pytest는 중지합니다.")
             }

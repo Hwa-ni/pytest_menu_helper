@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">pytest Menu Helper fox mascot, puzzled</title>
+  <desc id="desc">A friendly orange fox tilts its head and scratches it with one paw, unsure about the result.</desc>
+  <!--
+    별도 상태(테스트 없음, 중단, 미완료, skip/xfail 확인 필요, 집계·실행 오류)에 쓰는 "갸웃하는" 포즈.
+    mascot-fox.svg와 같은 선·색·비율을 쓰고, 머리만 왼쪽으로 기울이고 오른팔을 머리 옆으로 올렸다.
+    기울기는 바깥 g의 transform 속성에 두었다. 애니메이션이 꺼져도(prefers-reduced-motion,
+    NSImage처럼 CSS를 재생하지 못하는 렌더러) 기울어진 최종 모습이 그대로 보이게 하기 위해서다.
+    안쪽 .head는 반대로 기울어진 상태에서 0으로 돌아오며 한 번만 움직인다(성공처럼 계속 뛰지 않는다).
+  -->
+  <style>
+    .head { animation: tilt 560ms cubic-bezier(.35, .05, .45, 1) 1 both; transform-box: view-box; transform-origin: 128px 134px; }
+    .paw { animation: raise 560ms cubic-bezier(.35, .05, .45, 1) 1 both; transform-box: view-box; transform-origin: 165px 135px; }
+    .question { animation: pop 420ms ease-out 380ms 1 both; transform-box: fill-box; transform-origin: center bottom; }
+    @keyframes tilt { 0% { transform: rotate(11deg); } 70% { transform: rotate(-2deg); } 100% { transform: rotate(0); } }
+    @keyframes raise { 0% { transform: rotate(48deg); } 100% { transform: rotate(0); } }
+    @keyframes pop { 0% { opacity: 0; transform: translateY(6px) scale(.6); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+    @media (prefers-reduced-motion: reduce) { .head, .paw, .question { animation: none; } }
+  </style>
+  <g stroke="#563C39" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Tail -->
+    <path fill="#E98545" d="M73 171c-30-4-45 10-43 29 2 18 23 27 43 17 12-6 18-19 16-34z"/>
+    <path fill="#FFF0D7" d="M36 196c7 11 21 14 34 7 7-4 11-10 13-17-17-5-35-1-47 10z" stroke-width="5"/>
+    <!-- Legs -->
+    <path fill="#D96F3C" d="M90 190l-5 28c-1 7 4 12 11 12h18c7 0 11-5 10-11l-4-31z"/>
+    <path fill="#D96F3C" d="M145 190l-2 28c0 7 5 12 12 12h17c7 0 11-5 10-11l-5-31z"/>
+    <path fill="#563C39" d="M84 222c0-5 4-9 9-9h26c7 0 11 5 11 11v3H90c-4 0-6-2-6-5z" stroke-width="5"/>
+    <path fill="#563C39" d="M140 222c0-5 4-9 9-9h27c6 0 10 5 10 11v3h-40c-4 0-6-2-6-5z" stroke-width="5"/>
+    <!-- Body -->
+    <path fill="#E98545" d="M77 137c0-20 18-35 44-35h31c27 0 45 17 45 43v39c0 15-11 26-27 26h-66c-16 0-27-11-27-26z"/>
+    <path fill="#FFF0D7" stroke-width="5" d="M108 132c-12 12-15 34-11 57 3 14 14 22 30 22h20c14-12 19-34 14-54-5-19-25-31-53-25z"/>
+    <!-- Head, tilted to the left -->
+    <g transform="rotate(-11 128 134)">
+      <g class="head">
+        <path fill="#E98545" d="M72 54 66 16c-1-7 6-10 11-5l32 29c9-3 19-4 29-2l30-27c5-5 12-2 11 5l-5 40c13 12 20 29 18 47-3 31-30 52-67 52-38 0-66-22-68-54-1-19 5-36 15-47z"/>
+        <path fill="#F5B274" stroke-width="5" d="m78 28 25 22-19 13z"/>
+        <path fill="#F5B274" stroke-width="5" d="m171 28-24 22 19 13z"/>
+        <path fill="#FFF0D7" stroke-width="5" d="M88 93c4-18 20-28 39-28 20 0 36 10 41 28 5 18-8 36-24 41-8 3-16-1-19-8-4 7-12 11-21 8-15-5-20-23-16-41z"/>
+        <!-- One raised brow, round eyes, small wavy mouth -->
+        <path fill="none" stroke-width="4" d="M98 72c5-5 12-6 17-3"/>
+        <ellipse cx="106" cy="85" rx="4.5" ry="6" fill="#563C39" stroke="none"/>
+        <ellipse cx="151" cy="85" rx="4.5" ry="6" fill="#563C39" stroke="none"/>
+        <path fill="#563C39" stroke="none" d="M123 99c0-4 3-7 7-7s7 3 7 7c0 3-4 6-7 6s-7-3-7-6z"/>
+        <path fill="none" stroke-width="4" d="M119 114c4-4 7-4 11 0s7 4 11 0"/>
+      </g>
+    </g>
+    <!-- Scarf -->
+    <path fill="#65CBB4" stroke-width="5" d="M89 119c12 7 26 10 42 10 13 0 25-3 36-9l5 14c-12 9-27 14-43 14-18 0-34-5-46-14z"/>
+    <path fill="#65CBB4" stroke-width="5" d="m108 140 1 25 15-9 12 12 3-27z"/>
+    <!-- Left arm down, right paw raised beside the head -->
+    <path fill="#E98545" d="M101 135c-10 0-18 4-23 12l-14 20c-3 5-1 11 4 14 5 3 10 1 13-3l17-19 9-7z"/>
+    <g transform="rotate(-12 165 135)">
+      <g class="paw">
+        <path fill="#E98545" d="M165 135 C175 129 183 118 189 107 L199 91 C202 86 199 81 194 80 C189 79 186 83 183 88 L165 113 154 121z"/>
+      </g>
+    </g>
+    <!-- Question mark -->
+    <g class="question" fill="none" stroke="#E3A83F" stroke-width="6">
+      <path d="M209 32c2-9 17-10 19-1 2 8-9 10-10 19"/>
+      <circle cx="218" cy="62" r="1.5" fill="#E3A83F"/>
+    </g>
+  </g>
+</svg>

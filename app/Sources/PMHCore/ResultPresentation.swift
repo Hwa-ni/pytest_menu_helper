@@ -306,7 +306,7 @@ public enum ResultPresentation {
                     row.indeterminate = true
                 }
             }
-            row.statusText = active.stopping ? "중지하는 중…" : active.phase.text
+            row.statusText = activeStatusText(active)
             return row
         }
         let reason = RunEligibility.reason(for: check)
@@ -340,10 +340,8 @@ public enum ResultPresentation {
             let listedBelow = !row.issues.isEmpty && (check?.issues.contains { reason.contains($0.message) } ?? false)
             row.statusText = listedBelow ? "실행 불가: 아래 문제를 먼저 해결하세요." : "실행 불가: \(reason)"
         } else if let outcome = snapshot.results[env.id] {
-            let status = outcomeStatus(outcome)
-            row.tone = status.tone
-            // 터미널에서 실행한 결과면 출처를 붙인다. 앱 결과로 오해하면 "앱에서 돌렸더니 실패"로 읽힌다.
-            row.statusText = snapshot.sources[env.id] == .terminal ? "\(status.text) · 터미널" : status.text
+            row.tone = outcomeStatus(outcome).tone
+            row.statusText = resultStatusText(outcome, source: snapshot.sources[env.id])
         }
         // 실행 불가여도 지난 결과의 진행 바는 보여 준다(무엇이 얼마나 돌았는지는 여전히 사실이다).
         if let outcome = snapshot.results[env.id], let p = outcomeProgress(outcome), let total = p.total, total > 0 {
@@ -351,6 +349,21 @@ public enum ResultPresentation {
             row.progressText = "\(p.done)/\(total)"
         }
         return row
+    }
+
+    /// 앱이 실행 중인 환경의 행 문구. 예: "수집 대기", "실행 중 2/5", "중지하는 중…".
+    /// 7단계 캐릭터 아래 글씨도 이 함수를 써서 행과 같은 문구가 된다(CharacterPresentation).
+    public static func activeStatusText(_ active: ActiveRun) -> String {
+        active.stopping ? "중지하는 중…" : active.phase.text
+    }
+
+    /// 끝난 실행의 행 문구. 예: "통과", "실패 1", "중단됨 · 터미널".
+    /// - Parameters: outcome(마지막 결과), source(결과 출처, nil이면 앱 실행).
+    /// 터미널에서 실행한 결과면 출처를 붙인다. 앱 결과로 오해하면 "앱에서 돌렸더니 실패"로 읽힌다.
+    /// 7단계 캐릭터 아래 글씨도 이 함수를 쓴다.
+    public static func resultStatusText(_ outcome: RunOutcome, source: RunSource?) -> String {
+        let text = outcomeStatus(outcome).text
+        return source == .terminal ? "\(text) · 터미널" : text
     }
 
     /// 진행 중인 터미널 실행의 문구.

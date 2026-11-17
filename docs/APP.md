@@ -1,10 +1,11 @@
-# macOS 메뉴 막대 앱 (3~6단계)
+# macOS 메뉴 막대 앱 (3~7단계)
 
 상태: 3단계 **완료**(로직은 자동 테스트로, 메뉴 표시·폴더 선택 창·환경 추가 동선은 사용자가 직접 확인, 2026-11-17).
 4단계(pytest 실행과 결과 연결)는 **완료**(로직은 자동 테스트로, 실행·실행 중 메뉴 갱신·중지·결과 문구는 사용자가 직접 확인, 2026-11-17). 플러그인 없는 환경에서 실행 버튼이 꺼지는 것도 확인했다.
 5단계(결과 팝오버와 실패 상세)는 **완료**(자동 검증과 사용자 화면 확인, 2026-11-17, 아래 "5단계" 절).
 그 뒤 메뉴(오른쪽 클릭·⚙)의 모든 동작을 팝오버 안으로 옮겼다(2026-11-17, 화면 사용자 확인, 아래 "팝오버 관리 동작" 절). 오른쪽 클릭 메뉴에는 "종료"만 남았다.
 6단계(다른 터미널의 pytest 실행 감지)는 구현과 자동·통합 검증을 마쳤고 Terminal.app 화면은 사용자가 확인해 **완료**했다(2026-11-17, 아래 "6단계" 절).
+7단계(캐릭터와 애니메이션)는 구현과 자동·통합 검증을 마쳤고 화면은 사용자가 확인해 **완료**했다(2026-11-17, 아래 "7단계" 절, 설계는 `docs/CHARACTER.md`).
 
 ## 구조
 
@@ -14,7 +15,9 @@
 - `app/Sources/pmh-check`: 같은 PMHCore로 환경을 검사해 출력하는 개발용 명령줄 도구.
 - `app/Sources/pmh-run`: 같은 PMHCore의 실행 로직(`RunController`)을 화면 없이 돌려 보는 개발용 명령줄 도구(통합 검증용).
 - `app/Sources/PMHCore/ExternalRuns.swift`: 다른 터미널 실행 감시기(`ExternalRunWatcher`), 매칭·생존 확인·집계 호출(6단계).
-- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(134개).
+- `app/Sources/PMHCore/CharacterPresentation.swift`: 상태→캐릭터 포즈 결정, 창 위치 규칙, 캐릭터 HTML 페이지(7단계, 순수 코드).
+- `app/Sources/PMHApp/CharacterWindow.swift`: 캐릭터 창(투명 `NSPanel` + WKWebView), 클릭·끌기, 위치 기억(7단계).
+- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(161개).
 
 ## 빌드·실행
 
@@ -27,6 +30,7 @@ app/test.sh                       # Swift 테스트 (아래 도구 문제 우회
 - 산출물과 SwiftPM 중간물은 저장소 밖 `~/.pmh-build/`에만 만든다. 실행은 `open`으로 한다(`docs/NOTIFICATION_BUNDLE.md`).
 - Bundle ID `dev.yohwan.pytest-menu-helper`, `LSUIElement=true`(Dock 아이콘 없음). 종료는 팝오버 맨 아래 [종료] 또는 아이콘 오른쪽 클릭의 "종료".
 - 메뉴 아이콘은 `assets/mascot-fox-menubar.svg`를 번들에 복사해 `NSImage`로 읽는다(원본은 수정하지 않음). 읽지 못하면 기본 기호로 대체한다.
+- 캐릭터 포즈 SVG 다섯 개(`mascot-fox`, `-animated`, `-success`, `-error`, `-attention`)도 번들 `Resources/`에 복사한다. 하나라도 없으면 빌드가 멈춘다.
 - 빌드 때 이 저장소 경로를 `Info.plist`(`PMHRepoPath`)에 기록해 플러그인 설치 명령에 쓴다.
 - **알려진 도구 문제:** Command Line Tools만 있으면 swift-testing 매크로 플러그인이 `.../swift/host/plugins/testing/`에 있어 컴파일러가 못 찾을 때가 있다. 소스를 바꾼 뒤 `swift test`가 `plugin for module 'TestingMacros' not found`로 실패한다. `app/test.sh`는 `-Xswiftc -plugin-path`로 그 폴더를 넘겨 이 문제를 피한다(재컴파일 3회 연속 통과 확인). 직접 `swift test`를 쓰면 실패할 수 있다. 테스트 파일에 POSIX `write`와 겹치는 전역 함수 이름(`write`)을 쓰면 같은 오류가 반복되므로 쓰지 않는다.
 - 이 Mac은 Command Line Tools만 있어 **XCTest가 없다.** 그래서 테스트는 swift-testing(`import Testing`)으로 작성했고 `swift test`로 실행된다.
@@ -224,6 +228,70 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 5. `~/.venvs/pmh-3.9/bin/python -m pytest`(등록하지 않은 환경)를 실행하면 팝오버 위에 "등록하지 않은 Python 환경(~/.venvs/pmh-3.9)…" 안내 한 줄이 회색으로 보이는가.
 6. 앱에서 ▶로 실행했을 때는 예전처럼 "실행 중 n/5"(터미널 표시 없음)로만 보이고 같은 실행이 두 번 보이지 않는가. 그 뒤 터미널에서 실행하면 나중에 끝난 쪽이 행의 결과가 되는가.
 
+## 7단계: 캐릭터와 애니메이션
+
+설계 결정과 이유, 상태→동작 대응표는 `docs/CHARACTER.md`에 있다. 여기에는 앱 쪽 동작과 검증만 적는다.
+
+### 앱 동작
+
+- 앱을 켜면 주 화면 오른쪽 아래(Dock 위, 가장자리에서 20pt)에 168×134pt 투명 창으로 여우가 뜬다. 끌어서 옮기면 위치를 기억한다(UserDefaults). 팝오버 맨 아래 [캐릭터 보이기]로 숨기거나 다시 보인다(기본은 보임, 설정 저장).
+- 포즈: 대기(정지), 실행 중 달리기, 성공 점프 반복, 실패·수집 오류는 넘어진 옆모습, 별도 상태(테스트 없음·중단됨·미완료·확인 필요·수집 실패·집계 오류·실행 오류·상태 확인 불가)는 갸웃 포즈. 결과 포즈는 다음 실행까지 유지한다. 마우스를 올리면 "환경 · 상태" 도움말이 보인다.
+- 상태 글씨: 모든 포즈의 캐릭터 아래에 팝오버 환경 행과 같은 문구가 보인다("실행 전", "실행 중 2/5", "터미널 실행 중 2/5", "통과", "실패 1 · 터미널", "중단됨" 등, 대응표는 `docs/CHARACTER.md`). 진행 글씨가 바뀌어도 애니메이션은 이어진다. 긴 글씨는 말줄임으로 창 안에서 자른다.
+- 갱신 흐름: 기존 `runStateArrived`/`externalStateArrived`(common 모드 `CFRunLoopPerformBlock` + `CFRunLoopWakeUp`) → `pushPopoverState`에서 팝오버와 같은 합친 상태로 `CharacterPresentation.state`를 계산해 캐릭터에 넣는다. 열린 팝오버·메뉴가 있어도 캐릭터가 바뀐다.
+- 캐릭터를 누르면 결과 팝오버가 캐릭터 위쪽에 열리고, 캐릭터가 따르던 환경이 선택돼 있다. 다시 누르거나 바깥을 누르면 닫힌다. 아이콘을 누르면 아이콘 아래로 옮겨 열린다.
+- 포즈 전환은 시스템 로그 category `character`에 남는다: `/usr/bin/log show --last 5m --style compact --predicate 'subsystem == "dev.yohwan.pytest-menu-helper" AND category == "character"'`. 줄 형식 `[캐릭터] pose=… label=… env=… key=… help=…`. 창 표시(`frame`, `windowNumber`), 위치 저장, 클릭도 남는다.
+
+### 통합 검증(2026-11-17, 앱과 별개 셸에서 실행)
+
+`~/.pmh-build/slow-sample`(등록됨, 환경 pmh-3.13)과 `examples/fastapi_demo`(검증 동안만 pmh-3.13으로 임시 등록, 끝난 뒤 `projects.json`을 원래대로 되돌림)에서 `~/.venvs/pmh-3.13/bin/python -m pytest`를 실행하고 위 로그와 창 캡처로 확인했다.
+
+| 실행 | 캐릭터 로그 |
+|---|---|
+| 앱 시작 | `pose=idle` → 창 표시 `{{1660, 114}, {120, 134}}` |
+| slow-sample 전체 실행 | `pose=running help=pmh-3.13 · 터미널 실행 중 1/5`·`2/5`·`3/5`(같은 key라 다시 재생하지 않음) → `pose=success help=pmh-3.13 · 통과 · 터미널` |
+| fastapi_demo(통과 1·실패 1) | `pose=failure help=pmh-3.13 · 실패 1 · 터미널`(다른 프로젝트 환경으로 따라감) |
+| slow-sample 4초 뒤 SIGINT | `running` → `pose=attention label=중단됨`(pytest exit 2, 2 passed). 성공 포즈 아님 |
+| slow-sample 4초 뒤 `kill -9` | `running` → `pose=attention label=미완료 help=… 미완료 · 터미널`. 성공·실패 포즈 아님 |
+| `-k does_not_exist_xyz`(exit 5) | `pose=attention label=테스트 없음` |
+
+창 캡처(`screencapture -o -l <windowNumber>`): `~/.pmh-build/it/character/`의 `idle.png`, `running.png`, `success.png`, `failure.png`, `interrupted.png`, `killed.png`, `notests.png`, 한 장으로 붙인 `all-poses.png`. 다섯 포즈와 상태 글씨가 투명 창에 그려지는 것을 확인했다(애니메이션 움직임 자체는 캡처로 확인할 수 없다).
+주의: 비대화형 bash에서 `&`로 띄운 pytest는 SIGINT를 무시한다(작업 제어가 꺼져 있으면 백그라운드 작업의 SIGINT가 무시됨). 첫 시도는 그래서 끝까지 돌아 "통과"가 됐고, `bash -c 'set -m; …'`로 다시 해 중단됨을 확인했다. 앱 문제가 아니다.
+앱 ▶ 실행은 화면 자동화가 없어 이번에 돌리지 못했다. 같은 합친 상태를 쓰는 것은 단위 테스트(`appRunIsRunning`, `latestStartedRunWins`)로 고정했고, 화면은 아래 확인 목록 2번으로 본다.
+
+자동 테스트: Swift 158개(`CharacterTests` 24개 추가: 결과→포즈, 성공 아닌 모든 결과, 따를 상태 고르기, key, 위치 규칙, 페이지·스크립트). Python은 바꾸지 않았다.
+
+#### 모든 포즈에 상태 글씨(2026-11-17 추가)
+
+같은 방식(앱과 별개 셸, `bash` + `set -m`, `examples/fastapi_demo`는 검증 동안만 임시 등록 후 `projects.json` 복원)으로 다시 실행했다. 창이 168×134로 넓어졌다(`창 표시 frame={{1631, 152}, {168, 134}}`, 저장 위치를 화면 안으로 맞춤).
+
+| 실행 | 캐릭터 로그 |
+|---|---|
+| 앱 시작 | `pose=idle label=실행 전` |
+| slow-sample 전체 실행 | `pose=running label=터미널 실행 중 1/5` → `2/5` → `3/5`(세 줄 모두 같은 `key=run:639ec6bf…`, 애니메이션 다시 시작 안 함) → `pose=success label=통과 · 터미널` |
+| fastapi_demo | `pose=running label=터미널 실행 중 0/?` → `pose=failure label=실패 1 · 터미널` |
+| SIGINT | `running` `1/5`·`2/5` → `pose=attention label=중단됨 · 터미널` |
+| `kill -9` | `running` `1/5`·`2/5` → `pose=attention label=미완료 · 터미널` |
+| `-k does_not_exist_xyz` | `pose=attention label=테스트 없음 · 터미널` |
+
+창 캡처: `~/.pmh-build/it/character/labels/`의 `idle.png`, `running-1.png`(1/5), `running-3.png`(캡처 시점 2/5), `success.png`, `failure.png`, `interrupted.png`, `killed.png`, `notests.png`, 한 장으로 붙인 `all-poses.png`. 가장 긴 "테스트 없음 · 터미널"까지 잘리지 않고 창 안에 보였다.
+자동 테스트: Swift 161개(`CharacterLabelTests` 4개 추가: 결과 글씨가 행 문구와 같음(앱·터미널 출처 모두), 대기 "실행 전", 실행 중 글씨, 진행이 바뀌어도 key 유지. 포즈 테스트는 글씨를 빼고 정리).
+
+### 7단계 사용자 확인(화면)
+
+결과(2026-11-17): 3번(별도 상태)은 코디네이터가 별도 셸에서 SIGINT·`kill -9`·`-k 없는이름`을 하나씩 실행하고 사용자가 화면에서 갸웃 포즈와 "중단됨"·"미완료"·"테스트 없음"을 확인했다(앱 로그도 같은 포즈). 나머지 항목은 사용자가 한 번씩 해 보고 잘 된다고 알려 왔다. 팝오버 ■ 중지로 인한 중단은 SIGINT 중단과 같은 판정이라 따로 보지 않았다. 성공 점프가 반복되는 동안 PMHApp CPU는 약 3.6%였다.
+
+앱을 켠 상태에서 확인한다. 느린 샘플: `~/.pmh-build/slow-sample`(테스트 5개, 약 10초).
+
+1. **다른 앱 사용 중 표시:** 앱을 켜면 주 화면 오른쪽 아래에 투명 배경의 여우가 보이는가(흰 사각형·그림자 없음). Safari·Terminal 등 다른 앱을 앞에 두고 클릭해 써도 여우가 그 창들 위에 남아 있고, 여우가 키보드 포커스를 가져가지 않는가.
+2. **포즈:** 팝오버 ▶로 느린 샘플을 실행하면 제자리 달리기, 끝나면 팔 든 점프와 반짝임이 다음 실행까지 반복되는가. 터미널(`cd ~/.pmh-build/slow-sample && ~/.venvs/pmh-3.13/bin/python -m pytest`)로 실행해도 같은가. 실패하는 실행(예: `examples/fastapi_demo`를 등록해 실행)이면 한 번 넘어진 뒤 얼굴을 바닥에 댄 채 누워 있는가.
+3. **별도 상태:** ■ 중지 또는 터미널 Ctrl+C면 갸웃 포즈와 "중단됨", `kill -9`면 "미완료", `-k 없는이름`이면 "테스트 없음"이 보이고 점프하지 않는가. 갸웃 동작이 한 번만 움직이고 멈추는가.
+4. **클릭:** 여우를 누르면 결과 팝오버가 여우 위쪽에 열리고, 여우가 따르던 환경(마지막에 실행한 환경)이 선택돼 있는가. 다시 누르거나 바깥을 누르면 닫히는가. 메뉴 막대 아이콘 팝오버가 열린 채 여우를 누르면 여우 쪽에 다시 열리는가.
+5. **위치·끌기:** 여우를 끌면 따라오고, 놓은 자리가 앱을 다시 시작해도 유지되는가. 화면 밖으로 끌어 놓으면 화면 안으로 돌아오는가. 살짝 누르기만 하면(끌지 않으면) 팝오버가 열리는가.
+6. **Spaces·전체화면:** Mission Control에서 다른 데스크톱으로 바꿔도 여우가 같은 자리에 보이는가. Safari 등을 전체화면(초록 버튼)으로 만든 Space에서도 여우가 앱 위에 보이고, 눌러서 팝오버가 열리는가.
+7. **켜고 끄기:** 팝오버 맨 아래 [캐릭터 보이기]를 끄면 여우가 사라지고, 앱을 다시 시작해도 꺼진 채인가. 다시 켜면 같은 자리에 나타나는가.
+8. (선택) 시스템 설정 > 손쉬운 사용 > 디스플레이 > "동작 줄이기"를 켜면 애니메이션이 멈추고 각 포즈의 정지 모습만 보이는가.
+9. **상태 글씨(2026-11-17 추가, 사용자 확인: 터미널 실행 중 1/5에서 3/5로 바뀌는 동안 달리기가 끊기지 않고 이어짐, 통과 · 터미널):** 모든 포즈의 여우 아래에 글씨가 보이고 팝오버 환경 행 문구와 같은가(앱 시작 "실행 전", 팝오버 ▶ 실행 중 "실행 중 n/5", 터미널 실행 중 "터미널 실행 중 n/5", 끝나면 "통과"·"실패 1"·"중단됨" 등, 터미널 결과면 " · 터미널"). 실행 중 글씨가 1/5→2/5로 바뀔 때 달리기가 끊기거나 처음부터 다시 시작하지 않는가. 성공 뒤 글씨가 바뀌어도 점프가 이어지는가. 글씨가 창 밖으로 잘리지 않는가(길면 …로 줄고, 마우스를 올리면 전체 문구).
+
 ## 알려진 제한
 
 - 팝오버 화면·선택 창 동작은 자동화하지 못했다(사용자 확인 필요). 화면이 쓰는 판단 값은 단위 테스트로 고정했다.
@@ -242,3 +310,4 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 - 같은 프로젝트에 같은 Python 경로는 한 번만 등록된다. 여러 환경 동시 실행은 9단계.
 - 다른 터미널 실행: 앱을 켜기 전에 끝난 실행은 보이지 않는다(이력은 11단계). 터미널 실행은 앱에서 중지할 수 없다. 실행 폴더(또는 rootdir)가 등록 프로젝트 안이어야 연결된다. `config.json`을 바꾸면 앱을 다시 시작해야 한다.
 - 다른 터미널 실행 결과도 메모리에만 있다. 앱에서 정한 동시 실행 1건 제한은 앱 실행에만 적용되며, 터미널 실행은 개수 제한 없이 따로 돈다.
+- 캐릭터 창 안의 투명한 부분(그림 바깥)도 클릭을 받는다. 앱을 다시 시작하면 캐릭터는 대기 포즈로 시작한다(결과가 메모리에만 있음). 전체화면 앱 위 표시는 화면 확인 전이다.

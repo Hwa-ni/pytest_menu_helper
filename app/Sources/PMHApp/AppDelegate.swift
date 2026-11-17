@@ -14,6 +14,10 @@
 // 이벤트 폴더는 공통 설정 파일(config.json)로 정한다(AppPaths.resolve, 플러그인과 같은 규칙).
 // 외부 실행의 감지·연결·결과와 그때의 행 문구는 시스템 로그(subsystem dev.yohwan.pytest-menu-helper,
 // category external)에 남긴다. 화면 자동화가 없어 통합 검증을 이 로그로 한다(docs/APP.md "6단계").
+// 7단계: 화면 구석의 캐릭터 창(CharacterWindow.swift)이 같은 합친 상태(merged)를 따른다. pushPopoverState에서
+// CharacterPresentation.state로 포즈를 정해 넣으므로, 앱 ▶ 실행과 터미널 실행이 같은 규칙으로 캐릭터를 움직인다.
+// 캐릭터를 누르면 결과 팝오버를 캐릭터 옆에 열고, 캐릭터가 따르던 환경을 선택해 보여 준다.
+// 포즈 전환은 시스템 로그(category character)에 남긴다(docs/CHARACTER.md).
 
 import AppKit
 import os
@@ -30,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private let popoverModel = PopoverViewModel()
     /// 팝오버가 마지막으로 닫힌 시각. 아이콘을 눌러 닫을 때 바로 다시 열리는 것을 막는 데 쓴다(togglePopover 참고).
     private var popoverClosedAt: Date?
+    /// 팝오버를 붙여 연 뷰(메뉴 막대 아이콘 또는 캐릭터). 선택 창 뒤에 다시 열 때 같은 자리에 연다.
+    private weak var popoverAnchor: NSView?
+    /// 캐릭터 창(7단계). 앱 시작 때(applicationDidFinishLaunching) 만든다. NSApplication이 준비되기 전에 창을 만들지 않기 위함이다.
+    private var character: CharacterWindowController?
     /// 폴더·파일 선택 창이 떠 있는지. 떠 있는 동안 아이콘 클릭으로 팝오버가 겹쳐 열리지 않게 한다.
     private var panelIsOpen = false
     private let store = ProjectStore()
@@ -80,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         setupQuitMenu()
         setupPopover()
+        setupCharacter()
 
         let outcome = store.load()
         registry = outcome.registry
@@ -170,11 +179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         pushPopoverState()
     }
 
-    /// 팝오버 화면에 지금 상태를 넣는다(메인 스레드). 등록·검사·실행 상태가 바뀌는 모든 곳에서 부른다.
+    /// 팝오버 화면과 캐릭터에 지금 상태를 넣는다(메인 스레드). 등록·검사·실행 상태가 바뀌는 모든 곳에서 부른다.
     private func pushPopoverState() {
         let merged = runSnapshot.merged(external: externalSnapshot)
         popoverModel.update(registry: registry, checks: checks, snapshot: merged,
                             notices: [loadWarning, saveError, resolvedPaths.warning].compactMap { $0 })
+        // 캐릭터도 팝오버와 같은 합친 상태를 따른다. 같은 상태면 컨트롤러가 페이지에 다시 넣지 않는다.
+        character?.apply(CharacterPresentation.state(registry: registry, snapshot: merged))
         // 등록·검사 결과가 바뀌면 감시기의 매칭 대상도 바꾼다(검사가 끝나야 환경 prefix를 안다).
         let targets = ExternalMatching.targets(registry: registry, checks: checks)
         if targets != lastTargets {
@@ -198,6 +209,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         }
     }
 
+    // MARK: 캐릭터
+
+    /// 캐릭터 창을 만들고, 보이기 설정과 클릭 동작을 잇는다.
+    private func setupCharacter() {
+        let controller = CharacterWindowController()
+        controller.onClick = { [weak self] anchor, state in self?.characterClicked(anchor: anchor, state: state) }
+        character = controller
+        popoverModel.setCharacterVisible(controller.isVisible)
+        popoverModel.onToggleCharacter = { [weak self] visible in
+            self?.character?.isVisible = visible
+            self?.popoverModel.setCharacterVisible(visible)
+        }
+    }
+
+    /// 캐릭터를 눌렀을 때. 팝오버가 캐릭터에 열려 있으면 닫고, 아니면 캐릭터 옆에 열어 캐릭터가 따르던 환경을 보여 준다.
+    /// 아이콘 쪽에 열려 있던 팝오버는 캐릭터를 누르는 순간(.transient) 닫힌다. 그때는 0.3초 다시 열기 막기를 쓰지 않는다.
+    /// 막으면 "아이콘 팝오버가 열린 채 캐릭터를 눌렀더니 닫히기만 했다"가 된다.
+    private func characterClicked(anchor: NSView, state: CharacterState) {
+        if panelIsOpen { return }
+        let anchoredHere = popoverAnchor === anchor
+        if popover.isShown {
+            if anchoredHere { popover.performClose(nil); return }
+            // 다른 자리에 열려 있으면 애니메이션 없이 바로 닫는다. performClose는 닫히는 애니메이션 동안 isShown이
+            // true로 남아, 바로 이어지는 showPopover가 아무것도 하지 않는다.
+            popover.close()
+        } else if anchoredHere, let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3 {
+            return
+        }
+        popoverModel.prepareForFreshOpen()
+        popoverModel.focusEnvironment(state.envID)
+        showPopover(fresh: false, anchor: anchor)
+    }
+
     /// 아이콘 클릭. 오른쪽 클릭이나 control+왼쪽 클릭이면 종료 메뉴, 그 밖의 왼쪽 클릭이면 팝오버.
     @objc private func statusItemClicked(_ sender: Any?) {
         let event = NSApp.currentEvent
@@ -213,22 +257,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 마우스를 뗄 때 이 함수가 불려 다시 열린다. 방금(0.3초 안) 닫혔으면 다시 열지 않아 이 깜빡임을 막는다.
     private func togglePopover() {
         if panelIsOpen { return } // 선택 창이 끝나면 runPanelOutsidePopover가 다시 연다
-        if popover.isShown { popover.performClose(nil); return }
-        if let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3 { return }
+        let button = statusItem.button
+        let anchoredHere = popoverAnchor === button
+        if popover.isShown {
+            if anchoredHere { popover.performClose(nil); return }
+            // 캐릭터 쪽에 열려 있으면 닫고 아이콘 아래에 다시 연다. 바로 닫는 이유는 characterClicked와 같다.
+            popover.close()
+        } else if anchoredHere, let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3 {
+            return
+        }
         showPopover(fresh: true)
     }
 
-    /// 팝오버를 아이콘 아래에 연다.
-    /// - Parameter fresh: true면 사용자가 새로 연 것으로 보고 선택·폼·제거 확인을 처음 상태로 돌린다.
-    ///   false면(파일 선택 창 뒤에 다시 열 때) 하던 상태를 그대로 둔다.
-    private func showPopover(fresh: Bool) {
+    /// 팝오버를 연다.
+    /// - Parameters:
+    ///   - fresh: true면 사용자가 새로 연 것으로 보고 선택·폼·제거 확인을 처음 상태로 돌린다.
+    ///     false면(파일 선택 창 뒤에 다시 열 때, 캐릭터가 선택을 정해 둔 뒤) 하던 상태를 그대로 둔다.
+    ///   - anchor: 팝오버를 붙일 뷰. nil이면 메뉴 막대 아이콘.
+    /// 캐릭터를 눌렀을 때 캐릭터 옆에 여는 이유: 눈이 캐릭터에 있고, 전체화면 앱에서는 메뉴 막대가 숨어 있어
+    /// 아이콘 아래에 열면 엉뚱한 곳(화면 맨 위)에 뜬다.
+    private func showPopover(fresh: Bool, anchor: NSView? = nil) {
         guard !popover.isShown, let button = statusItem.button else { return }
+        // 기준 뷰가 보이지 않으면(캐릭터를 숨긴 직후 등) 아이콘 아래에 연다. 숨은 창에 붙이면 팝오버가 보이지 않는다.
+        let target = anchor.flatMap { $0.window?.isVisible == true ? $0 : nil } ?? button
+        popoverAnchor = target
         if fresh { popoverModel.prepareForFreshOpen() }
         pushPopoverState()
         // Dock 아이콘이 없는 앱(LSUIElement)은 활성화하지 않으면 팝오버 창이 키 창이 되지 못해
         // 이름 칸 입력, 텍스트 선택·복사가 되지 않고 바깥 클릭으로 닫히지 않을 때가 있다.
         NSApp.activate(ignoringOtherApps: true)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // 아이콘이면 아래(.minY), 캐릭터면 위(.maxY). 자리가 모자라면 NSPopover가 반대쪽으로 바꾼다.
+        popover.show(relativeTo: target.bounds, of: target, preferredEdge: target === button ? .minY : .maxY)
         popover.contentViewController?.view.window?.makeKey()
     }
 
@@ -254,7 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             NSApp.activate(ignoringOtherApps: true)
             body()
             self.panelIsOpen = false
-            self.showPopover(fresh: false)
+            // 열려 있던 자리(아이콘 또는 캐릭터)에 다시 연다.
+            self.showPopover(fresh: false, anchor: self.popoverAnchor)
         }
     }
 

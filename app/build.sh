@@ -19,6 +19,12 @@ cp "$APP_DIR/Info.plist" "$APP/Contents/Info.plist"
 # 메뉴 아이콘 원본은 수정하지 않고 복사만 한다.
 cp "$REPO/assets/mascot-fox-menubar.svg" "$APP/Contents/Resources/"
 cp "$REPO/assets/mascot-fox-menubar@2x.png" "$APP/Contents/Resources/"
+# 7단계 캐릭터 포즈 SVG(대기·달리기·성공·실패·갸웃). 앱이 읽어 WKWebView 페이지에 넣는다(CharacterWindow.swift).
+# 하나라도 없으면 cp가 실패해 빌드가 멈춘다(set -e). 빠진 채로 번들을 만들면 그 포즈에서 캐릭터가 사라지는데
+# 앱을 실행해 그 상태가 되기 전에는 알 수 없다.
+for name in mascot-fox mascot-fox-animated mascot-fox-success mascot-fox-error mascot-fox-attention; do
+  cp "$REPO/assets/$name.svg" "$APP/Contents/Resources/"
+done
 codesign --force --sign - "$APP"
 echo "built: $APP"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature|flags" || true
