@@ -1,6 +1,7 @@
 // PopoverView.swift
 // 메뉴 막대 아이콘을 왼쪽 클릭하면 열리는 팝오버의 SwiftUI 화면. 앱의 모든 동작이 이 화면 안에 있다
-// (결과 목록과 실패 상세, 프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 캐릭터 보이기, 종료).
+// (결과 목록과 실패 상세, 프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 캐릭터 보이기, 완료 알림, 종료).
+// 8단계: 맨 아래 [완료 알림] 토글과 권한 거부 안내 줄·[설정 열기], 프로젝트 폴더가 없을 때의 오류 줄과 [폴더 다시 지정].
 // 입력: PopoverViewModel이 들고 있는 PopoverState(PMHCore의 ResultPresentation이 만든 값)와
 // 화면 안 상태(환경 추가 폼, 제거 확인, 펼친 실패 항목, 알림 문장).
 // 출력: 사용자 동작을 뷰 모델의 콜백으로 넘긴다. 등록 파일 저장·검사·파일 선택 창은 AppDelegate가 한다.
@@ -35,6 +36,10 @@ final class PopoverViewModel: ObservableObject {
     @Published private(set) var copiedCommand: String?
     /// 캐릭터 창을 보이는지(7단계). 맨 아래 [캐릭터 보이기] 체크 상자에 쓴다. 저장은 AppDelegate(onToggleCharacter)가 한다.
     @Published private(set) var characterVisible = true
+    /// [완료 알림] 토글 값(8단계). 저장은 AppDelegate(onToggleNotifications)가 한다.
+    @Published private(set) var notificationsEnabled = true
+    /// 토글은 켰는데 권한이 거부됐을 때의 회색 안내(NotificationPresentation.permissionNotice). 없으면 nil.
+    @Published private(set) var notificationNotice: String?
 
     /// 실행(▶) 요청. 매개변수는 환경 id.
     var onRun: (String) -> Void = { _ in }
@@ -58,10 +63,18 @@ final class PopoverViewModel: ObservableObject {
     var onQuit: () -> Void = {}
     /// [캐릭터 보이기] 체크 상자. 매개변수는 새 값. 창을 보이거나 숨기고 설정을 저장하는 일은 AppDelegate가 한다.
     var onToggleCharacter: (Bool) -> Void = { _ in }
+    /// [완료 알림] 토글. 매개변수는 새 값.
+    var onToggleNotifications: (Bool) -> Void = { _ in }
+    /// 안내 줄의 [설정 열기]. 시스템 설정의 알림 화면을 연다.
+    var onOpenNotificationSettings: () -> Void = {}
+    /// [폴더 다시 지정]. 매개변수는 프로젝트 id. 폴더 선택 창과 저장은 AppDelegate가 한다.
+    var onRelocateProject: (UUID) -> Void = { _ in }
 
     private var registry = Registry()
     private var checks: [String: EnvCheck] = [:]
     private var snapshot = RunSnapshot()
+    /// 폴더가 없는 프로젝트 id(8단계). update로 받는다.
+    private var missingFolders: Set<UUID> = []
     /// 사용자가 고른 프로젝트·환경. nil이면 기본 선택(실행 중인 환경, 없으면 첫 환경)을 쓴다.
     private var preferredProjectID: UUID?
     private var preferredEnvID: String?
@@ -72,8 +85,11 @@ final class PopoverViewModel: ObservableObject {
     /// - Parameters:
     ///   - registry·checks·snapshot: 등록 정보, 환경 id별 검사 결과, 실행 상태.
     ///   - notices: 팝오버 위쪽 경고 문장들.
-    func update(registry: Registry, checks: [String: EnvCheck], snapshot: RunSnapshot, notices: [String]) {
+    ///   - missingFolders: 폴더가 없는 프로젝트 id.
+    func update(registry: Registry, checks: [String: EnvCheck], snapshot: RunSnapshot, notices: [String],
+                missingFolders: Set<UUID> = []) {
         self.registry = registry; self.checks = checks; self.snapshot = snapshot
+        self.missingFolders = missingFolders
         if notices != self.notices { self.notices = notices }
         recompute()
     }
@@ -100,6 +116,12 @@ final class PopoverViewModel: ObservableObject {
     /// 캐릭터 보이기 값을 화면에 반영한다(AppDelegate가 저장한 값을 넣는다). 같은 값이면 다시 그리지 않는다.
     func setCharacterVisible(_ visible: Bool) {
         if characterVisible != visible { characterVisible = visible }
+    }
+
+    /// 완료 알림 토글 값과 권한 안내를 화면에 반영한다. 같은 값이면 다시 그리지 않는다.
+    func setNotifications(enabled: Bool, notice: String?) {
+        if notificationsEnabled != enabled { notificationsEnabled = enabled }
+        if notificationNotice != notice { notificationNotice = notice }
     }
 
     /// 프로젝트를 바꾸면 환경 선택은 새 프로젝트의 기본값으로 돌린다(다른 프로젝트의 환경 id가 남지 않게).
@@ -206,7 +228,8 @@ final class PopoverViewModel: ObservableObject {
 
     private func recompute() {
         let next = ResultPresentation.build(registry: registry, checks: checks, snapshot: snapshot,
-                                            preferredProjectID: preferredProjectID, preferredEnvID: preferredEnvID)
+                                            preferredProjectID: preferredProjectID, preferredEnvID: preferredEnvID,
+                                            missingFolders: missingFolders)
         if next != state { state = next }
         // 폼의 프로젝트가 등록에서 사라졌으면 폼을 닫는다. 남기면 [추가]가 없는 프로젝트를 가리킨다.
         if let f = form, !registry.projects.contains(where: { $0.id == f.projectID }) { form = nil }
@@ -274,8 +297,25 @@ struct PopoverRootView: View {
                                                     set: { model.onToggleCharacter($0) }))
                     .toggleStyle(.checkbox)
                     .help("화면 구석의 여우 캐릭터를 보이거나 숨깁니다. 캐릭터를 누르면 이 팝오버가 열립니다.")
+                // 8단계 완료 알림 켜고 끄기(기본은 켬). 끄면 권한과 상관없이 보내지 않는다. 바인딩 방식은 위 토글과 같다.
+                Toggle("완료 알림", isOn: Binding(get: { model.notificationsEnabled },
+                                                 set: { model.onToggleNotifications($0) }))
+                    .toggleStyle(.checkbox)
+                    .help("pytest 실행이 끝나면 macOS 알림을 보냅니다. 직접 중지한 실행은 보내지 않습니다.")
                 Spacer()
                 Button("종료") { model.onQuit() }.help("앱을 종료합니다. 실행 중인 pytest는 중지합니다.")
+            }
+            // 토글은 켰는데 시스템 설정에서 알림이 거부된 상태. 경고가 아니라 안내라 회색으로 보인다.
+            // 권한이 없어도 팝오버·캐릭터·실행은 그대로 동작하므로 막지 않고 고치는 길만 알려 준다.
+            if let notice = model.notificationNotice {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("설정 열기") { model.onOpenNotificationSettings() }
+                        .controlSize(.small)
+                        .help("시스템 설정의 알림 화면을 엽니다.")
+                }
             }
         }
         .padding(12)
@@ -343,6 +383,19 @@ struct PopoverRootView: View {
             if let path = state.selectedProjectPath {
                 Text(path).font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(path)
+            }
+            // 8단계: 등록한 폴더가 없어졌으면(이름 변경·이동·삭제) 경로 바로 아래에 오류와 고치는 버튼을 둔다.
+            // 환경 행보다 먼저 보이는 자리라, ▶를 누르기 전에 원인을 알 수 있다.
+            if let error = state.projectFolderError, let projectID = state.selectedProjectID {
+                HStack(spacing: 6) {
+                    Label(error, systemImage: "folder.badge.questionmark")
+                        .font(.caption).foregroundStyle(Color(nsColor: .systemRed))
+                    Spacer(minLength: 0)
+                    Button("폴더 다시 지정") { model.onRelocateProject(projectID) }
+                        .controlSize(.small)
+                        .help("옮기거나 이름을 바꾼 폴더를 고릅니다. 등록한 환경은 그대로 둡니다.")
+                }
+                .padding(.top, 2)
             }
         }
     }

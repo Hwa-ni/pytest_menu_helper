@@ -46,6 +46,9 @@ final class CharacterWindowController: NSObject, WKNavigationDelegate {
     private(set) var state: CharacterState = .idle
     private var appliedState: CharacterState?
 
+    /// 팝오버를 캐릭터 옆에 열 때 기준으로 쓸 뷰(8단계 알림 클릭에서 쓴다). 클릭 때 onClick이 넘기는 뷰와 같다.
+    var anchorView: NSView { hitView }
+
     /// 보이기 설정. 기본값은 보임(사용자 결정 1=A). 바꾸면 바로 저장한다.
     var isVisible: Bool {
         get { UserDefaults.standard.object(forKey: Self.visibleKey) as? Bool ?? true }

@@ -285,6 +285,9 @@ public struct RunSnapshot: Equatable {
     public var finishedAt: [String: Date] = [:]
     /// 환경 id → 마지막 결과의 출처. 키가 없으면 앱 실행이다.
     public var sources: [String: RunSource] = [:]
+    /// 환경 id → 마지막 결과를 낸 실행 ID(8단계). 완료 알림을 실행마다 한 번만 보내는 데 쓴다
+    /// (NotificationPresentation.decisions). 결과(results)와 함께 바뀐다. 키가 없으면 실행 ID를 모르는 결과다.
+    public var runIDs: [String: String] = [:]
     /// 환경 id → 진행 중인 외부 실행(같은 환경에 여럿이면 가장 나중에 시작한 것).
     public var external: [String: ExternalActive] = [:]
     /// 등록하지 않은 환경에서 실행한 최근 외부 실행(감시기 값 그대로).
@@ -308,6 +311,8 @@ public struct RunSnapshot: Equatable {
             s.elapsed[envID] = r.elapsed
             s.finishedAt[envID] = r.finishedAt
             s.sources[envID] = .terminal
+            // 결과와 실행 ID를 같이 바꾼다. 빠뜨리면 터미널 결과에 앱 실행 ID가 붙어 알림이 중복되거나 빠진다.
+            s.runIDs[envID] = r.runID
         }
         // active는 시작 시각 순이라 뒤의 것이 덮어써 "가장 나중에 시작한 실행"이 남는다.
         for a in ext.active { s.external[a.envID] = a }

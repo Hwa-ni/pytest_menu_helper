@@ -18,6 +18,11 @@
 // CharacterPresentation.state로 포즈를 정해 넣으므로, 앱 ▶ 실행과 터미널 실행이 같은 규칙으로 캐릭터를 움직인다.
 // 캐릭터를 누르면 결과 팝오버를 캐릭터 옆에 열고, 캐릭터가 따르던 환경을 선택해 보여 준다.
 // 포즈 전환은 시스템 로그(category character)에 남긴다(docs/CHARACTER.md).
+// 8단계: pushPopoverState마다 같은 합친 상태를 Notifier(Notifier.swift)에 넘겨, 새로 끝난 실행마다 완료 알림을
+// 한 번 보낸다(중단은 보내지 않음). 알림을 누르면 캐릭터 클릭과 같이 그 환경을 고른 팝오버를 연다.
+// 팝오버 맨 아래 [완료 알림] 토글과, 권한이 거부됐을 때의 안내 줄·[설정 열기]도 여기서 잇는다.
+// 프로젝트 폴더가 없어졌는지는 시작·검사·팝오버 열기 때 확인해(refreshProjectFolders) 프로젝트 줄에 보이고,
+// [폴더 다시 지정]은 환경 등록을 그대로 둔 채 경로만 바꾼다(relocateProject).
 
 import AppKit
 import os
@@ -72,6 +77,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private var lastTargets: [ProjectTarget]?
     /// 환경 id → 마지막으로 로그에 남긴 행 문구. 바뀔 때만 남긴다.
     private var loggedRowText: [String: String] = [:]
+    /// 완료 알림(8단계). 알림 클릭 응답을 놓치지 않게 앱 객체를 만들 때 함께 만든다(Notifier.init 참고).
+    private let notifier = Notifier()
+    /// 폴더가 없는 프로젝트 id(8단계). refreshProjectFolders가 채운다.
+    private var missingFolders: Set<UUID> = []
+    /// [폴더 다시 지정]이 막혔을 때의 이유 문장. 팝오버를 새로 열면 지운다.
+    private var relocateError: String?
     private lazy var checker: EnvironmentChecker = {
         let repo = Bundle.main.object(forInfoDictionaryKey: "PMHRepoPath") as? String
         return EnvironmentChecker(repoPath: repo)
@@ -89,10 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         setupQuitMenu()
         setupPopover()
         setupCharacter()
+        setupNotifier()
 
         let outcome = store.load()
         registry = outcome.registry
         loadWarning = outcome.warning
+        refreshProjectFolders()
         for project in registry.projects { for env in project.environments { recheck(env) } }
         pushPopoverState()
         // 이전 실행이 남긴 이벤트·로그 파일 중 최신 50개만 남긴다(백그라운드).
@@ -168,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             NSPasteboard.general.setString(command, forType: .string)
         }
         popoverModel.onQuit = { NSApp.terminate(nil) }
+        popoverModel.onRelocateProject = { [weak self] id in self?.relocateProject(id) }
         let hosting = NSHostingController(rootView: PopoverRootView(model: popoverModel))
         // 팝오버 크기를 SwiftUI 내용 크기에 맞춘다. 폼을 열거나 실패 목록을 펼치면 팝오버도 함께 커진다
         // (상한은 화면 쪽 스크롤 영역의 maxHeight).
@@ -183,7 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private func pushPopoverState() {
         let merged = runSnapshot.merged(external: externalSnapshot)
         popoverModel.update(registry: registry, checks: checks, snapshot: merged,
-                            notices: [loadWarning, saveError, resolvedPaths.warning].compactMap { $0 })
+                            notices: [loadWarning, saveError, resolvedPaths.warning, relocateError].compactMap { $0 },
+                            missingFolders: missingFolders)
+        // 새로 끝난 실행의 완료 알림. 팝오버·캐릭터와 같은 합친 상태를 넘기므로 앱 ▶ 실행과 터미널 실행이 같은 규칙을 따른다.
+        // 이미 처리한 실행 ID는 Notifier가 걸러, 진행 갱신마다 불러도 실행당 한 번만 결정한다.
+        notifier.process(registry: registry, snapshot: merged)
         // 캐릭터도 팝오버와 같은 합친 상태를 따른다. 같은 상태면 컨트롤러가 페이지에 다시 넣지 않는다.
         character?.apply(CharacterPresentation.state(registry: registry, snapshot: merged))
         // 등록·검사 결과가 바뀌면 감시기의 매칭 대상도 바꾼다(검사가 끝나야 환경 prefix를 안다).
@@ -207,6 +225,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
                 }
             }
         }
+    }
+
+    // MARK: 완료 알림
+
+    /// 완료 알림의 토글·권한 안내·클릭 동작을 팝오버와 잇고, 권한 상태를 읽기 시작한다.
+    private func setupNotifier() {
+        notifier.onAuthorizationChange = { [weak self] _ in self?.pushNotificationSettings() }
+        notifier.onOpen = { [weak self] envID in self?.openPopover(focusing: envID) }
+        popoverModel.onToggleNotifications = { [weak self] enabled in
+            guard let self = self else { return }
+            self.notifier.isEnabled = enabled
+            Notifier.log.notice("완료 알림 토글=\(enabled)")
+            self.pushNotificationSettings()
+            // 켜는 순간 권한을 다시 읽는다. 시스템 설정에서 바꾼 뒤 돌아와 토글을 켠 경우 안내 줄이 바로 맞게 보인다.
+            if enabled { self.notifier.refreshAuthorization() }
+        }
+        popoverModel.onOpenNotificationSettings = { Notifier.openSystemSettings() }
+        pushNotificationSettings()
+        notifier.start()
+    }
+
+    /// 토글 값과 권한 안내 줄을 팝오버에 넣는다(메인 스레드).
+    private func pushNotificationSettings() {
+        let enabled = notifier.isEnabled
+        popoverModel.setNotifications(enabled: enabled, notice: NotificationPresentation.permissionNotice(
+            enabled: enabled, authorization: notifier.authorization))
+    }
+
+    /// 알림을 눌렀을 때. 캐릭터 클릭과 같이 그 환경을 고른 팝오버를 연다.
+    /// 캐릭터가 보이면 캐릭터 옆에, 숨겼으면 메뉴 막대 아이콘 아래에 연다(전체화면 앱에서는 메뉴 막대가 숨기 때문).
+    /// 선택 창이 떠 있으면 열지 않는다. 그 창이 끝나면 runPanelOutsidePopover가 팝오버를 다시 연다.
+    private func openPopover(focusing envID: String) {
+        if panelIsOpen { return }
+        // 이미 열려 있으면 바로 닫고 다시 연다. performClose는 애니메이션 동안 isShown이 true라 다시 열지 못한다.
+        if popover.isShown { popover.close() }
+        popoverModel.prepareForFreshOpen()
+        relocateError = nil
+        popoverModel.focusEnvironment(envID)
+        let anchor = character?.isVisible == true ? character?.anchorView : nil
+        showPopover(fresh: false, anchor: anchor)
     }
 
     // MARK: 캐릭터
@@ -281,7 +339,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         // 기준 뷰가 보이지 않으면(캐릭터를 숨긴 직후 등) 아이콘 아래에 연다. 숨은 창에 붙이면 팝오버가 보이지 않는다.
         let target = anchor.flatMap { $0.window?.isVisible == true ? $0 : nil } ?? button
         popoverAnchor = target
-        if fresh { popoverModel.prepareForFreshOpen() }
+        if fresh {
+            popoverModel.prepareForFreshOpen()
+            relocateError = nil
+        }
+        // 열 때마다 폴더 존재와 알림 권한을 다시 본다. 앱이 켜진 동안 폴더 이름을 바꾸거나 시스템 설정에서 알림을
+        // 바꿀 수 있는데, 둘 다 알려 주는 시스템 신호를 받지 않으므로 사용자가 볼 때 확인한다.
+        refreshProjectFolders()
+        notifier.refreshAuthorization()
         pushPopoverState()
         // Dock 아이콘이 없는 앱(LSUIElement)은 활성화하지 않으면 팝오버 창이 키 창이 되지 못해
         // 이름 칸 입력, 텍스트 선택·복사가 되지 않고 바깥 클릭으로 닫히지 않을 때가 있다.
@@ -398,6 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 프로젝트의 모든 환경을 다시 검사한다. 없는 id면 아무것도 하지 않는다.
     private func recheckProject(_ id: UUID) {
         guard let project = registry.projects.first(where: { $0.id == id }) else { return }
+        refreshProjectFolders()
         project.environments.forEach(recheck)
         pushPopoverState()
     }
@@ -406,6 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private func recheckEnvironment(_ envID: String) {
         for project in registry.projects {
             if let env = project.environments.first(where: { $0.id == envID }) {
+                refreshProjectFolders()
                 recheck(env)
                 pushPopoverState()
                 return
@@ -508,6 +575,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         checks[envID] = nil
         persist()
         pushPopoverState()
+    }
+
+    // MARK: 프로젝트 폴더 (8단계)
+
+    /// 등록한 프로젝트 폴더가 지금 있는지 확인하고, 없어지거나 다시 생긴 프로젝트를 로그에 남긴다(메인 스레드).
+    /// stat 호출 하나라 가볍다. 판단은 ProjectFolderCheck.missing(순수 함수)이 하고 여기서는 파일 시스템만 넘긴다.
+    private func refreshProjectFolders() {
+        let next = ProjectFolderCheck.missing(registry) { path in
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+        }
+        guard next != missingFolders else { return }
+        for project in registry.projects where next.contains(project.id) != missingFolders.contains(project.id) {
+            let text = next.contains(project.id) ? ProjectFolderCheck.missingMessage : "프로젝트 폴더 다시 확인됨"
+            AppDelegate.log.notice("[프로젝트 폴더] \(project.name, privacy: .public): \(text, privacy: .public) path=\(project.path, privacy: .public)")
+        }
+        missingFolders = next
+    }
+
+    /// [폴더 다시 지정]. 폴더 선택 창을 띄우고, 고른 폴더로 그 프로젝트의 경로만 바꾼다(환경 등록은 그대로).
+    /// 매개변수 id: 대상 프로젝트. 없는 id면 아무것도 하지 않는다.
+    /// 바꾼 뒤 그 프로젝트의 환경을 다시 검사한다. 감시기 매칭 대상은 pushPopoverState가 새 경로로 바꾼다.
+    /// 실행 중에도 막지 않는다. 실행은 시작할 때 받은 경로로 계속 돌고, 폴더가 없어진 상태라면 이미 실패했을 것이다.
+    private func relocateProject(_ id: UUID) {
+        guard let project = registry.projects.first(where: { $0.id == id }) else { return }
+        runPanelOutsidePopover { [weak self] in
+            guard let self = self else { return }
+            let panel = NSOpenPanel()
+            panel.title = "프로젝트 폴더 다시 지정"
+            panel.message = "\"\(project.name)\"의 새 폴더를 고르세요. 등록한 환경은 그대로 둡니다."
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            // 옛 폴더가 있던 상위 폴더에서 시작한다(이름만 바꾼 경우 바로 옆에 있다). 상위도 없으면 창 기본 위치.
+            let parent = (project.path as NSString).deletingLastPathComponent
+            if FileManager.default.fileExists(atPath: parent) { panel.directoryURL = URL(fileURLWithPath: parent) }
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            switch ProjectFolderCheck.relocate(self.registry, projectID: id, to: url.path) {
+            case .rejected(let reason):
+                self.relocateError = reason
+                AppDelegate.log.notice("[프로젝트 폴더] 다시 지정 막힘: \(reason, privacy: .public)")
+            case .relocated(let next):
+                self.relocateError = nil
+                self.registry = next
+                self.persist()
+                AppDelegate.log.notice("[프로젝트 폴더] 다시 지정: \(project.path, privacy: .public) → \(url.path, privacy: .public)")
+                self.refreshProjectFolders()
+                self.registry.projects.first { $0.id == id }?.environments.forEach(self.recheck)
+            }
+            self.pushPopoverState()
+        }
     }
 
     /// 등록 파일에 저장한다. 실패하면 경고 창 대신 팝오버 위쪽에 문장을 보인다.

@@ -257,3 +257,52 @@ public struct EnvironmentFormState: Equatable {
         return .ready(pythonPath: path, name: trimmed.isEmpty ? defaultEnvironmentName(forPython: path) : trimmed)
     }
 }
+
+// MARK: 프로젝트 폴더 (8단계)
+
+/// [폴더 다시 지정]의 결과.
+public enum ProjectRelocation: Equatable {
+    /// 경로만 바꾼 새 등록 정보. 프로젝트 id와 환경 목록(id·이름·Python 경로)은 그대로다.
+    case relocated(Registry)
+    /// 바꾸지 않았다. 매개변수는 팝오버 위에 보일 이유 문장.
+    case rejected(String)
+}
+
+/// 프로젝트 폴더가 사라졌을 때의 판단. 모두 순수 함수이고 파일 시스템 확인은 호출하는 쪽이 넘긴다.
+public enum ProjectFolderCheck {
+    /// 프로젝트 줄에 보일 오류 문장. 실행 때 RunController가 내는 오류("프로젝트 폴더가 없습니다: <경로>")와 앞부분을 맞춘다.
+    public static let missingMessage = "프로젝트 폴더가 없습니다"
+    /// 다시 지정하려는 폴더가 이미 다른 프로젝트로 등록돼 있을 때.
+    public static let duplicateMessage = "이미 다른 프로젝트로 등록한 폴더입니다. 그 프로젝트를 쓰거나 먼저 제거하세요."
+
+    /// 폴더가 없는 프로젝트 id 모음.
+    /// - Parameters:
+    ///   - registry: 등록 정보.
+    ///   - isDirectory: 경로가 지금 폴더로 있는지 알려 주는 함수. 앱은 FileManager로, 테스트는 가짜로 넘긴다.
+    /// - Returns: isDirectory가 false인 프로젝트의 id. 파일로 바뀐 경로도 폴더가 아니므로 없는 것으로 본다
+    ///   (pytest를 그 경로에서 실행할 수 없다).
+    public static func missing(_ registry: Registry, isDirectory: (String) -> Bool) -> Set<UUID> {
+        Set(registry.projects.filter { !isDirectory($0.path) }.map(\.id))
+    }
+
+    /// 프로젝트 경로만 새 폴더로 바꾼다(사용자 결정 4, 2026-11-17: 환경 등록은 유지).
+    /// - Parameters:
+    ///   - registry: 지금 등록 정보.
+    ///   - projectID: 바꿀 프로젝트. 등록에 없으면 rejected.
+    ///   - path: 새 폴더 경로.
+    /// - Returns: 바뀐 등록 정보, 또는 막은 이유.
+    /// 같은 폴더가 다른 프로젝트로 이미 등록돼 있으면 막는다. 허용하면 같은 폴더가 프로젝트 둘로 보여
+    /// 터미널 실행 연결(ExternalMatching)이 어느 쪽에 붙을지 정할 수 없다.
+    /// 자기 자신과 같은 경로(폴더를 원래 이름으로 되돌린 뒤 다시 고름)는 바꾸지 않고 그대로 돌려준다.
+    public static func relocate(_ registry: Registry, projectID: UUID, to path: String) -> ProjectRelocation {
+        guard let index = registry.projects.firstIndex(where: { $0.id == projectID }) else {
+            return .rejected("프로젝트를 찾지 못했습니다. 이미 제거됐을 수 있습니다.")
+        }
+        if registry.projects.contains(where: { $0.id != projectID && $0.path == path }) {
+            return .rejected(duplicateMessage)
+        }
+        var next = registry
+        next.projects[index].path = path
+        return .relocated(next)
+    }
+}

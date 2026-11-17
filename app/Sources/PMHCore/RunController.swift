@@ -295,6 +295,8 @@ public final class RunController {
     private func complete(envID: String, outcome: RunOutcome, runID: String, elapsed: TimeInterval?) {
         lock.lock()
         state.results[envID] = outcome
+        // 결과를 낸 실행 ID. 완료 알림이 같은 실행을 한 번만 보내는 기준이다(8단계).
+        state.runIDs[envID] = runID
         state.elapsed[envID] = elapsed
         // 외부 실행 결과와 최신을 비교할 시각(RunSnapshot.merged).
         state.finishedAt[envID] = Date()

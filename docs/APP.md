@@ -1,4 +1,4 @@
-# macOS 메뉴 막대 앱 (3~7단계)
+# macOS 메뉴 막대 앱 (3~8단계)
 
 상태: 3단계 **완료**(로직은 자동 테스트로, 메뉴 표시·폴더 선택 창·환경 추가 동선은 사용자가 직접 확인, 2026-11-17).
 4단계(pytest 실행과 결과 연결)는 **완료**(로직은 자동 테스트로, 실행·실행 중 메뉴 갱신·중지·결과 문구는 사용자가 직접 확인, 2026-11-17). 플러그인 없는 환경에서 실행 버튼이 꺼지는 것도 확인했다.
@@ -6,6 +6,7 @@
 그 뒤 메뉴(오른쪽 클릭·⚙)의 모든 동작을 팝오버 안으로 옮겼다(2026-11-17, 화면 사용자 확인, 아래 "팝오버 관리 동작" 절). 오른쪽 클릭 메뉴에는 "종료"만 남았다.
 6단계(다른 터미널의 pytest 실행 감지)는 구현과 자동·통합 검증을 마쳤고 Terminal.app 화면은 사용자가 확인해 **완료**했다(2026-11-17, 아래 "6단계" 절).
 7단계(캐릭터와 애니메이션)는 구현과 자동·통합 검증을 마쳤고 화면은 사용자가 확인해 **완료**했다(2026-11-17, 아래 "7단계" 절, 설계는 `docs/CHARACTER.md`).
+8단계(완료 알림과 데모 정리)는 구현과 자동·통합 검증(알림 거부 상태)을 마쳤고 **화면 확인 대기**다(2026-11-17, 아래 "8단계" 절, 설계는 `docs/STEP8_DESIGN.md`).
 
 ## 구조
 
@@ -17,7 +18,9 @@
 - `app/Sources/PMHCore/ExternalRuns.swift`: 다른 터미널 실행 감시기(`ExternalRunWatcher`), 매칭·생존 확인·집계 호출(6단계).
 - `app/Sources/PMHCore/CharacterPresentation.swift`: 상태→캐릭터 포즈 결정, 창 위치 규칙, 캐릭터 HTML 페이지(7단계, 순수 코드).
 - `app/Sources/PMHApp/CharacterWindow.swift`: 캐릭터 창(투명 `NSPanel` + WKWebView), 클릭·끌기, 위치 기억(7단계).
-- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(161개).
+- `app/Sources/PMHCore/NotificationPresentation.swift`: 완료 알림을 보낼지, 제목·본문·identifier, 권한 안내 문장(8단계, 순수 코드).
+- `app/Sources/PMHApp/Notifier.swift`: `UNUserNotificationCenter` 감싸기. 권한 읽기·요청, 보내기, 보낸 실행 ID 집합, 알림 클릭(8단계).
+- `app/Tests/PMHCoreTests`: swift-testing 단위 테스트(178개).
 
 ## 빌드·실행
 
@@ -130,12 +133,12 @@ Python 후보: `<프로젝트>/.venv/bin/python`, `~/.venvs/*/bin/python`, 그 �
 swift build --scratch-path ~/.pmh-build/swiftpm --package-path app --product pmh-run
 BIN=$(swift build --scratch-path ~/.pmh-build/swiftpm --package-path app --show-bin-path)/pmh-run
 $BIN ~/.venvs/pmh-3.13/bin/python examples/fastapi_demo --data-dir ~/.pmh-build/it/data   # 실패 · 통과 1 · 실패 1
-$BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-after 4      # 중지(중단됨)
+$BIN <python> examples/slow_demo --data-dir ~/.pmh-build/it/data --stop-after 4      # 중지(중단됨)
 ```
 
 ### 4단계 사용자 확인(화면 동작)
 
-자동으로 확인하지 못한 항목이다. 1~6번 모두 사용자가 확인했다(2026-11-17, 1~5번은 메뉴 갱신 수정 후 느린 샘플로, 6번은 `pmh-noplugin` 화면으로). 느린 샘플 프로젝트: `~/.pmh-build/slow-sample/`(저장소 밖, 테스트 5개, 약 10초).
+자동으로 확인하지 못한 항목이다. 1~6번 모두 사용자가 확인했다(2026-11-17, 1~5번은 메뉴 갱신 수정 후 느린 샘플로, 6번은 `pmh-noplugin` 화면으로). 느린 샘플 프로젝트: 당시 `~/.pmh-build/slow-sample/`(저장소 밖, 테스트 5개, 약 10초). 8단계에서 같은 테스트를 `examples/slow_demo/`로 옮겼다.
 1. 환경 하위 메뉴의 "pytest 실행"이 보이고 누르면 실행되는가.
 2. 실행 중 메뉴를 열었을 때 앱이 멈추지 않고 반응하는가(느린 샘플 사용). 진행 줄이 "수집 대기" → "실행 중 n/5"로 바뀌는가.
 3. 실행 중 모든 환경의 "pytest 실행"이 꺼져 있는가.
@@ -219,9 +222,9 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 
 전체 자동 테스트 재실행(2026-11-17, 커밋 db00ac6 기준): `app/test.sh` Swift 134개(26개 묶음) 통과. Python `tests/`는 `~/.venvs/pmh-3.9`·`pmh-3.12`·`pmh-3.13`에서 각각 43개 통과.
 
-앱을 켜고 팝오버를 연 채로 확인한다. 느린 샘플: `~/.pmh-build/slow-sample`(테스트 5개, 약 10초).
+앱을 켜고 팝오버를 연 채로 확인한다. 느린 샘플: `examples/slow_demo`(테스트 5개, 약 10초. 6단계 확인 당시에는 같은 테스트가 `~/.pmh-build/slow-sample`에 있었다).
 
-1. 새 Terminal.app 창에서 `cd ~/.pmh-build/slow-sample && ~/.venvs/pmh-3.13/bin/python -m pytest`를 실행한다. pmh-3.13 행이 "터미널 실행 중 n/5"로 바뀌고 진행 바·링·경과 시간이 움직이며, 행에 ■ 없이 ▶가 켜져 있는가. 상세에 "다른 터미널에서 시작한 실행입니다(pid N)"가 보이는가.
+1. 새 Terminal.app 창에서 `cd examples/slow_demo && ~/.venvs/pmh-3.13/bin/python -m pytest`를 실행한다. pmh-3.13 행이 "터미널 실행 중 n/5"로 바뀌고 진행 바·링·경과 시간이 움직이며, 행에 ■ 없이 ▶가 켜져 있는가. 상세에 "다른 터미널에서 시작한 실행입니다(pid N)"가 보이는가.
 2. 끝나면 행이 "통과 · 터미널", 상세가 "성공 · 통과 5 · 실패 0"과 "다른 터미널에서 실행한 결과입니다."로 바뀌고, 터미널 요약(5 passed)과 건수가 같은가.
 3. 같은 명령을 돌리다 Ctrl+C를 누르면 "중단됨 · 터미널"이 되는가. 다른 창에서 `kill -9 <pid>`(상세에 보이는 pid)로 끊으면 "미완료 · 터미널"이 되는가(실패가 아님).
 4. `~/.venvs/pmh-noplugin/bin/python -m pytest`와 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 ~/.venvs/pmh-3.13/bin/python -m pytest`는 화면에 아무 변화가 없고, pmh-noplugin 상세 맨 아래에 "터미널 감지 불가", pmh-3.13 상세 맨 아래에 끄는 조건 문장이 보이는가.
@@ -280,10 +283,10 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 
 결과(2026-11-17): 3번(별도 상태)은 코디네이터가 별도 셸에서 SIGINT·`kill -9`·`-k 없는이름`을 하나씩 실행하고 사용자가 화면에서 갸웃 포즈와 "중단됨"·"미완료"·"테스트 없음"을 확인했다(앱 로그도 같은 포즈). 나머지 항목은 사용자가 한 번씩 해 보고 잘 된다고 알려 왔다. 팝오버 ■ 중지로 인한 중단은 SIGINT 중단과 같은 판정이라 따로 보지 않았다. 성공 점프가 반복되는 동안 PMHApp CPU는 약 3.6%였다.
 
-앱을 켠 상태에서 확인한다. 느린 샘플: `~/.pmh-build/slow-sample`(테스트 5개, 약 10초).
+앱을 켠 상태에서 확인한다. 느린 샘플: `examples/slow_demo`(테스트 5개, 약 10초. 7단계 확인 당시에는 같은 테스트가 `~/.pmh-build/slow-sample`에 있었다).
 
 1. **다른 앱 사용 중 표시:** 앱을 켜면 주 화면 오른쪽 아래에 투명 배경의 여우가 보이는가(흰 사각형·그림자 없음). Safari·Terminal 등 다른 앱을 앞에 두고 클릭해 써도 여우가 그 창들 위에 남아 있고, 여우가 키보드 포커스를 가져가지 않는가.
-2. **포즈:** 팝오버 ▶로 느린 샘플을 실행하면 제자리 달리기, 끝나면 팔 든 점프와 반짝임이 다음 실행까지 반복되는가. 터미널(`cd ~/.pmh-build/slow-sample && ~/.venvs/pmh-3.13/bin/python -m pytest`)로 실행해도 같은가. 실패하는 실행(예: `examples/fastapi_demo`를 등록해 실행)이면 한 번 넘어진 뒤 얼굴을 바닥에 댄 채 누워 있는가.
+2. **포즈:** 팝오버 ▶로 느린 샘플을 실행하면 제자리 달리기, 끝나면 팔 든 점프와 반짝임이 다음 실행까지 반복되는가. 터미널(`cd examples/slow_demo && ~/.venvs/pmh-3.13/bin/python -m pytest`)로 실행해도 같은가. 실패하는 실행(예: `examples/fastapi_demo`를 등록해 실행)이면 한 번 넘어진 뒤 얼굴을 바닥에 댄 채 누워 있는가.
 3. **별도 상태:** ■ 중지 또는 터미널 Ctrl+C면 갸웃 포즈와 "중단됨", `kill -9`면 "미완료", `-k 없는이름`이면 "테스트 없음"이 보이고 점프하지 않는가. 갸웃 동작이 한 번만 움직이고 멈추는가.
 4. **클릭:** 여우를 누르면 결과 팝오버가 여우 위쪽에 열리고, 여우가 따르던 환경(마지막에 실행한 환경)이 선택돼 있는가. 다시 누르거나 바깥을 누르면 닫히는가. 메뉴 막대 아이콘 팝오버가 열린 채 여우를 누르면 여우 쪽에 다시 열리는가.
 5. **위치·끌기:** 여우를 끌면 따라오고, 놓은 자리가 앱을 다시 시작해도 유지되는가. 화면 밖으로 끌어 놓으면 화면 안으로 돌아오는가. 살짝 누르기만 하면(끌지 않으면) 팝오버가 열리는가.
@@ -292,11 +295,93 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 8. (선택) 시스템 설정 > 손쉬운 사용 > 디스플레이 > "동작 줄이기"를 켜면 애니메이션이 멈추고 각 포즈의 정지 모습만 보이는가.
 9. **상태 글씨(2026-11-17 추가, 사용자 확인: 터미널 실행 중 1/5에서 3/5로 바뀌는 동안 달리기가 끊기지 않고 이어짐, 통과 · 터미널):** 모든 포즈의 여우 아래에 글씨가 보이고 팝오버 환경 행 문구와 같은가(앱 시작 "실행 전", 팝오버 ▶ 실행 중 "실행 중 n/5", 터미널 실행 중 "터미널 실행 중 n/5", 끝나면 "통과"·"실패 1"·"중단됨" 등, 터미널 결과면 " · 터미널"). 실행 중 글씨가 1/5→2/5로 바뀔 때 달리기가 끊기거나 처음부터 다시 시작하지 않는가. 성공 뒤 글씨가 바뀌어도 점프가 이어지는가. 글씨가 창 밖으로 잘리지 않는가(길면 …로 줄고, 마우스를 올리면 전체 문구).
 
+## 8단계: 완료 알림과 견고성
+
+설계와 결정(2026-11-17, "정할 것" 5가지 모두 추천안)은 `docs/STEP8_DESIGN.md`에 있다. 여기에는 앱 쪽 동작과 검증만 적는다.
+
+### 앱 동작
+
+- **보내는 때:** 실행 하나가 끝나 결과가 정해지면 1건. 앱 ▶ 실행과 터미널 실행 모두(결정 1), 팝오버가 열려 있어도(결정 3) 보낸다. 앱이 앞에 있을 때도 배너가 뜨게 delegate가 `.banner`를 돌려준다.
+- **보내지 않는 때:** 중단됨(■ 중지 SIGINT, 터미널 Ctrl+C)과 ■ 뒤 강제 종료된 "미완료 · 중지함"(결정 2, 사용자가 직접 멈춘 실행). [완료 알림] 토글이 꺼져 있을 때. 권한이 없을 때(로그만 남김).
+- **한 번만:** 결정한 실행 ID(보냄·안 보냄 모두)를 메모리 집합에 넣고 다시 결정하지 않는다. 알림 요청 identifier도 실행 ID라 같은 ID가 다시 들어가도 알림 센터가 덮어쓴다. 앱을 다시 켜면 집합은 비지만 결과도 비고, 감시기는 앱 시작 전에 끝난 실행을 무시해 다시 보낼 일이 없다(재시작 직후 로그에 알림 줄 없음, 2026-11-17 확인).
+- **문구:** 제목 `통과 · slow_demo / pmh-3.13`, `실패 1 · fastapi_demo / pmh-3.13 · 터미널`(머리말은 팝오버 행 문구와 같은 `ResultPresentation.outcomeStatus`). 본문 첫 줄은 건수와 시간(`통과 5 · 실패 0 · 9.9초`), 건수가 없는 결과는 결과 제목 전체(`미완료 · 시그널 9(KILL) · 2/5 끝남`). 실패가 있으면 둘째 줄에 첫 실패 테스트(`examples/fastapi_demo/test_app.py::test_health_intentionally_fails`, 여럿이면 `… 외 N건`).
+- **누르면:** 그 실행의 환경을 고른 팝오버를 연다. 캐릭터가 보이면 캐릭터 옆, 숨겼으면 메뉴 막대 아이콘 아래.
+- **권한:** 앱을 켤 때 상태를 읽고 `notDetermined`일 때만 한 번 요청한다. 팝오버를 열 때와 보낼 때마다 다시 읽는다(시스템 설정에서 바꾼 값을 반영). 팝오버 맨 아래 [캐릭터 보이기] 옆에 [완료 알림] 토글(기본 켬, UserDefaults `completionNotificationsEnabled`). 토글이 켜져 있고 권한이 `denied`면 회색 한 줄 "알림이 꺼져 있습니다. 시스템 설정 > 알림 > pytest Menu Helper에서 허용하세요."와 [설정 열기](시스템 설정 알림 화면). 권한이 없어도 팝오버·캐릭터·실행·중지는 그대로다.
+- **프로젝트 폴더 없음:** 앱 시작, 다시 검사, 팝오버 열기 때 등록 폴더가 있는지 본다(`ProjectFolderCheck.missing`). 없으면 머리의 경로 아래에 빨간 "프로젝트 폴더가 없습니다"와 [폴더 다시 지정]. 다시 지정하면 프로젝트 id와 환경 등록은 그대로 두고 경로만 바꾼 뒤 환경을 다시 검사한다(결정 4). 다른 프로젝트가 이미 쓰는 폴더면 바꾸지 않고 팝오버 위에 이유를 보인다. ▶는 지금처럼 켜져 있고 누르면 "실행 오류 · 프로젝트 폴더가 없습니다"가 된다.
+- **로그(category `notify`):** `알림 권한 시작 상태=… cdhash=…`, `알림 권한 요청 결과 granted=…`, `알림 보냄 run=… 제목=… 본문=…`, `알림 보내지 않음(중단) run=…`, `알림 보내지 않음(권한 없음: denied) run=… 제목=…`, `알림 보내지 않음(완료 알림 꺼짐) run=…`, `알림 클릭 run=… env=…`. 폴더는 category `external`에 `[프로젝트 폴더] <이름>: 프로젝트 폴더가 없습니다 path=…`.
+  보기: `/usr/bin/log show --last 5m --style compact --predicate 'subsystem == "dev.yohwan.pytest-menu-helper" AND category == "notify"'`.
+
+### 견고성 점검(설계 3절, 2026-11-17)
+
+| 상황 | 확인한 동작 | 근거 |
+|---|---|---|
+| 앱 재실행 | 등록은 남고 결과·캐릭터는 대기로 시작. 앱 전에 끝난 터미널 실행은 다시 보이지 않고 알림도 다시 오지 않음 | 재시작 로그(`pose=idle`, 알림 줄 없음), 6단계 감시기 단위 테스트 |
+| 프로젝트 폴더 이름 변경 | 앱 시작 때 `[프로젝트 폴더] tmpproj: 프로젝트 폴더가 없습니다` | 임시 폴더를 등록하고 이름을 바꾼 뒤 재시작한 로그, `ProjectFolderTests` 5개 |
+| 플러그인 누락 | "조치 필요"와 설치 명령, ▶ 꺼짐, 상세의 "터미널 감지 불가" | `pmh-check ~/.venvs/pmh-noplugin/bin/python`, 기존 단위 테스트 |
+| 플러그인 구버전(0.2.x) | 막지 않는 "조치 필요" 안내 | 단위 테스트 `plugin020WarnsAboutTerminalButDoesNotBlockRun`(0.2.x 환경이 없어 실제 환경으로는 보지 않음) |
+| Python 경로 사라짐 | "오류 · Python 경로가 없습니다: …", ▶ 꺼짐 | `pmh-check ~/.venvs/pmh-gone/bin/python`(없는 경로) |
+| pytest 없음 | "오류 · pytest가 설치되어 있지 않습니다" | `pmh-check ~/.venvs/pmh-nopytest/bin/python` |
+
+### 통합 검증(2026-11-17, 앱과 별개 셸에서 실행)
+
+검증 동안만 `projects.json`에 `examples/slow_demo`, `examples/fastapi_demo`, 임시 폴더를 pmh-3.13으로 등록했고 끝난 뒤 원래 파일로 되돌렸다. 실행 명령은 `~/.venvs/pmh-3.13/bin/python -m pytest -q -p no:cacheprovider`.
+
+알림 거부(`denied`) 상태 결과. 실행마다 결정 줄이 정확히 1번씩 남았다.
+
+| 실행 | 앱 로그(category notify) |
+|---|---|
+| slow_demo 전체(5 passed, 9.93초) | `알림 보내지 않음(권한 없음: denied) run=89f4aa4b… 제목=통과 · slow_demo / pmh-3.13 · 터미널` |
+| fastapi_demo(1 failed, 1 passed) | `알림 보내지 않음(권한 없음: denied) run=1faecc09… 제목=실패 1 · fastapi_demo / pmh-3.13 · 터미널` |
+| slow_demo 4초 뒤 SIGINT(2 passed) | `알림 보내지 않음(중단) run=dcc0b897… env=it8-slow` |
+| slow_demo 4초 뒤 `kill -9` | `알림 보내지 않음(권한 없음: denied) run=17fa31fa… 제목=미완료 · slow_demo / pmh-3.13 · 터미널` |
+
+알림 허용(`authorized`) 상태 결과(사용자가 시스템 설정에서 허용한 뒤). 실행마다 결정 줄이 정확히 1번씩 남았다.
+
+| 실행 | 앱 로그(category notify) |
+|---|---|
+| slow_demo 전체(5 passed, 9.92초) | `알림 보냄 run=47e633d4… 제목=통과 · slow_demo / pmh-3.13 · 터미널 본문=통과 5 · 실패 0 · 9.9초` |
+| fastapi_demo(1 failed, 1 passed) | `알림 보냄 run=5c7aa60f… 제목=실패 1 · fastapi_demo / pmh-3.13 · 터미널 본문=통과 1 · 실패 1 · 0.1초 / examples/fastapi_demo/test_app.py::test_health_intentionally_fails` |
+| slow_demo 4초 뒤 SIGINT(2 passed) | `알림 보내지 않음(중단) run=fcaf237d… env=it8-slow` |
+| slow_demo 4초 뒤 `kill -9` | `알림 보냄 run=355f8f35… 제목=미완료 · slow_demo / pmh-3.13 · 터미널 본문=미완료 · 프로세스 종료됨(종료 코드 모름) · 2/5 끝남` |
+
+터미널 실행의 nodeid는 pytest rootdir(저장소 루트, `pyproject.toml`) 기준이라 `examples/fastapi_demo/…`로 시작한다. 터미널 `kill -9`는 종료 코드와 소요 시간을 알 수 없어 본문에 시간이 없다. 알림이 화면에 실제로 뜨는지와 누르면 팝오버가 열리는지는 아래 확인 목록 1번으로 본다.
+
+**다시 빌드 뒤 알림 권한(설계 6절 위험) 시험:** 권한은 Bundle ID 기준으로 유지됐다. 로그 `알림 권한 시작 상태=…`의 cdhash와 상태를 차례로 기록했다.
+
+| 순서 | cdhash(앞 8자리) | 시작 상태 |
+|---|---|---|
+| 첫 빌드, 첫 실행 | ce1d06c3 | notDetermined → 요청했으나 콜백 없이 대기(팝업 응답 기록 없음) |
+| 같은 빌드 재시작 3회 | ce1d06c3 | denied |
+| (사용자가 시스템 설정에서 허용) 코드를 바꿔 다시 빌드 | 2093c507 | authorized |
+| 코드를 되돌려 다시 빌드 | ce1d06c3 | authorized |
+
+권한 창이 실제로 화면에 떴는지, 사용자가 [허용 안 함]을 눌렀는지는 알 수 없다(2.5단계 샘플과 같은 현상). 그래서 안내 줄과 [설정 열기]가 필요하다. 허용한 뒤에는 서명(cdhash)이 바뀌어도 다시 허용할 필요가 없었다.
+
+주의: 비대화형 셸에서 `&`로 띄운 pytest는 SIGINT를 무시한다. 중단 시험은 `perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' <명령> &`로 감싸 띄웠다. pytest pid는 `pgrep -f "pmh-3.13/bin/python -m pytest"`로 찾는다(`ps | grep test`는 앱 경로 `PytestMenuHelper.app`에도 걸린다).
+앱 ▶ 실행의 알림은 화면 자동화가 없어 돌리지 못했다. 앱 실행 결과에도 실행 ID가 붙어 같은 결정 함수를 지나는 것은 단위 테스트(`passedRunSendsOneNoticeWithRunIDAsIdentifier`, `mergedKeepsAppRunIDWhenAppResultIsNewer`)로 고정했고 화면은 아래 확인 목록으로 본다.
+
+자동 테스트: Swift 178개(`NotificationTests` 17개 추가: 결과별 보낼지, 제목·본문(팝오버 행 문구와 직접 비교), 같은 실행 1번, 중단·중지함 안 보냄, 토글 꺼짐, 터미널 실행 ID와 출처 표시, 권한 안내, 폴더 없음 검사·다시 지정). Python 소스는 바꾸지 않았다.
+
+### 8단계 사용자 확인(화면)
+
+상태: **일부 확인(2026-11-17).** 1번: 터미널 실행으로 성공(slow-sample)·실패(fastapi_demo)·미완료(kill -9) 알림이 1번씩 뜨고, 실패 알림 둘째 줄에 실패 위치가 보이며, 알림을 누르면 팝오버가 열리는 것을 사용자가 확인했다(앱 로그 "알림 보냄"·"알림 클릭"과 일치). 2번: 터미널 Ctrl+C 중단에 알림이 없고 여우가 "중단됨"인 것을 확인했다(■ 중지는 따로 보지 않음). 6번: 워커가 다시 빌드해 서명(cdhash)이 바뀐 뒤에도 권한이 authorized로 남는 것을 로그로 확인했다. 3·4·5·7번은 화면 확인 대기다.
+
+앱을 켠 상태에서 확인한다. 샘플: `examples/slow_demo`(테스트 5개, 약 10초), `examples/fastapi_demo`(통과 1·실패 1). 두 폴더를 팝오버에서 프로젝트로 등록하고 pmh-3.13 환경을 추가해 둔다.
+
+1. **알림 허용 상태:** 시스템 설정 > 알림 > pytest Menu Helper에서 알림을 허용한다. slow_demo ▶ 성공, fastapi_demo ▶ 실패, slow_demo를 터미널에서 돌리다 다른 창에서 `kill -9 <pid>`(미완료)를 하면 알림이 1번씩 뜨고 제목·본문이 팝오버 행 문구와 맞는가(실패는 둘째 줄에 `examples/fastapi_demo/test_app.py::test_health_intentionally_fails`). 알림을 누르면 팝오버가 그 환경을 고른 채 열리는가.
+2. **중단은 알림 없음:** slow_demo ▶ 뒤 ■ 중지, 터미널 실행 뒤 Ctrl+C 모두 알림이 뜨지 않는가.
+3. **알림 거부 상태:** 시스템 설정에서 알림을 끈 뒤 팝오버를 열면 맨 아래에 회색 안내 줄과 [설정 열기]가 보이고, 누르면 시스템 설정의 알림 화면이 열리는가. 이 상태에서 ▶ 실행·캐릭터·결과 확인이 그대로 되는가.
+4. **토글:** [완료 알림]을 끄면 실행이 끝나도 알림이 없고, 앱을 다시 시작해도 꺼진 채인가. 다시 켜면 다음 실행부터 오는가(꺼진 동안 끝난 실행은 오지 않음).
+5. **폴더 없음:** 등록한 프로젝트 폴더 이름을 Finder에서 바꾼 뒤 팝오버를 열면 경로 아래에 "프로젝트 폴더가 없습니다"와 [폴더 다시 지정]이 보이는가. 바뀐 폴더를 고르면 오류가 사라지고 환경 행이 그대로 남아 다시 검사되는가.
+6. **다시 빌드 뒤 권한:** `app/build.sh`로 다시 빌드하고 `pkill -x PMHApp; sleep 1.5; open ~/.pmh-build/PytestMenuHelper.app`로 켠 뒤에도 알림이 뜨는가(시스템 설정에서 다시 허용하지 않아도 되는가).
+7. **데모 대본:** README "데모 대본"대로 처음부터 끝까지(slow_demo 성공 → fastapi_demo 실패 → slow_demo 중단 → 터미널 실행) 막힘 없이 되는가.
+
 ## 알려진 제한
 
 - 팝오버 화면·선택 창 동작은 자동화하지 못했다(사용자 확인 필요). 화면이 쓰는 판단 값은 단위 테스트로 고정했다.
 - 실행 결과는 메모리에만 있어 앱을 다시 시작하면 사라진다(11단계).
-- ad-hoc 서명이라 다른 Mac 배포·알림 권한 유지는 미확인(`docs/NOTIFICATION_BUNDLE.md`).
+- ad-hoc 서명이라 다른 Mac 배포는 미확인(`docs/NOTIFICATION_BUNDLE.md`). 다시 빌드한 뒤 알림 권한이 유지되는지는 아래 "8단계" 절의 시험 결과를 본다.
+- 알림: 집중 모드(방해 금지)에서는 알림이 화면에 뜨지 않는다(앱 문제 아님). 보낸 실행 ID는 메모리에만 있다.
 - 선택 창(폴더·Python 파일)이 떠 있는 동안 팝오버는 닫혀 있다. 창이 끝나면 다시 열리며 하던 상태가 이어진다. 창이 떠 있는 동안 아이콘을 눌러도 팝오버는 열리지 않는다.
 - 팝오버 바깥을 눌러 닫았다가 아이콘으로 새로 열면 작성 중이던 환경 추가 폼과 제거 확인은 사라진다(새로 열 때는 기본 선택부터 보여 준다).
 - 저장 실패는 경고 창 대신 팝오버 맨 위 문장으로 알린다. 메모리의 등록 정보는 바뀐 채로 두고 다음 변경 때 다시 저장한다.
@@ -304,6 +389,7 @@ $BIN <python> ~/.pmh-build/slow-sample --data-dir ~/.pmh-build/it/data --stop-af
 - 앱이 강제 종료(SIGKILL, 충돌 등)되면 이미 시작한 pytest는 남을 수 있다. 정상 종료 때만 SIGINT·SIGKILL로 정리한다. 신호는 pytest 본체에만 보내므로, pytest가 따로 띄운 손자 프로세스는 남을 수 있다.
 - 실행 중인 환경과 그 프로젝트는 제거할 수 없다. 먼저 중지해야 한다.
 - 화면 확인 필요(2026-11-17 팝오버 이전분): 프로젝트·환경 추가와 제거, 폼과 선택 창 뒤 팝오버 다시 열림, 명령 복사, 실행 중 제거 막기(실행이 끝나면 "⋯"에서 다시 켜지는지), 오른쪽 클릭 종료. 팝오버에서의 실행 성공·중지와 실행 중 [종료]로 pytest가 남지 않는 것(KeyboardInterrupt, exit 2)은 사용자가 확인했다(2026-11-17).
+- 원인 미확인(2026-11-17): 사용자가 팝오버에서 `examples/fastapi_demo` 프로젝트와 환경을 등록했다고 했지만 projects.json에 남지 않았다. 앱이 그 뒤 같은 내용으로 다시 저장했고 로그에도 등록 기록이 없어, 앱 메모리에 등록이 들어가지 않은 것으로 보인다. 절차가 중간에 끝났는지 버그인지는 팝오버 등록을 다시 해 봐야 안다. 시험을 위해 코디네이터가 앱을 끄고 파일에 직접 추가했다.
 - 앱 시작 때와 환경 추가·다시 검사 때만 검사한다. 이후 환경이 바뀌어도 자동 감지하지 않는다.
 - 잘못된 경로도 등록은 되고 "오류"로 표시된다(행의 "⋯"에서 제거 가능).
 - 검사 도중 앱을 종료하면 검사 프로세스는 10초 제한으로 끝난다.

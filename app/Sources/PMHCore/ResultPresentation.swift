@@ -164,6 +164,8 @@ public struct PopoverState: Equatable {
     public var projectRemoveBlockedReason: String? = nil
     /// 선택한 프로젝트에서 등록하지 않은 Python 환경의 pytest를 감지했을 때 팝오버 위에 보일 안내. 없으면 nil.
     public var terminalNotice: String? = nil
+    /// 선택한 프로젝트 폴더가 없을 때 프로젝트 줄에 보일 오류 문장(8단계). 있으면 [폴더 다시 지정]도 보인다.
+    public var projectFolderError: String? = nil
 
     /// 빈 상태(프로젝트 없음). 화면 쪽 뷰 모델의 첫 값으로 쓴다.
     public static let empty = PopoverState(projects: [], selectedProjectID: nil, rows: [], selectedEnvID: nil,
@@ -540,10 +542,12 @@ public enum ResultPresentation {
     ///   - checks: 환경 id → 검사 결과(없으면 검사 중).
     ///   - snapshot: 실행 상태.
     ///   - preferredProjectID·preferredEnvID: 사용자가 고른 값. 없거나 지금 목록에 없으면 기본값을 쓴다.
+    ///   - missingFolders: 폴더가 없는 프로젝트 id(ProjectFolderCheck.missing). 기본값은 빈 집합(모두 있음).
     /// 기본 선택: 프로젝트는 실행 중인 환경이 있는 프로젝트, 없으면 첫 프로젝트.
     /// 환경은 그 프로젝트에서 실행 중인 환경, 없으면 첫 환경.
     public static func build(registry: Registry, checks: [String: EnvCheck], snapshot: RunSnapshot,
-                             preferredProjectID: UUID?, preferredEnvID: String?) -> PopoverState {
+                             preferredProjectID: UUID?, preferredEnvID: String?,
+                             missingFolders: Set<UUID> = []) -> PopoverState {
         let options = registry.projects.map { ProjectOption(id: $0.id, name: $0.name) }
         var state = PopoverState(projects: options, selectedProjectID: nil, rows: [], selectedEnvID: nil,
                                  detail: nil, emptyMessage: nil)
@@ -561,6 +565,8 @@ public enum ResultPresentation {
             ?? registry.projects[0]
         state.selectedProjectID = project.id
         state.selectedProjectPath = project.path
+        // 폴더 없음은 환경 목록보다 먼저 정한다. 환경이 없는 프로젝트(아래 조기 반환)에서도 보여야 한다.
+        state.projectFolderError = missingFolders.contains(project.id) ? ProjectFolderCheck.missingMessage : nil
         state.projectRemoveBlockedReason = ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: activeEnv)
         state.terminalNotice = terminalNotice(project: project, unregistered: snapshot.unregistered, checks: checks)
         guard !project.environments.isEmpty else {
