@@ -79,6 +79,7 @@ public struct EnvironmentChecker {
         "pytest_version": ver("pytest"),
         "fastapi_version": ver("fastapi"),
         "plugin_installed": plugin,
+        "plugin_version": ver("pytest-menu-helper"),
     }))
     """
 

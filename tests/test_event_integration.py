@@ -219,3 +219,36 @@ def test_event_io_error_does_not_change_pytest_verdict(tmp_path):
         result = run_pytest(tmp_path, "--menu-events", tmp_path,
                             f"test_outcomes.py::{selection}")
         assert result.returncode == expected, result.stdout + result.stderr
+
+
+def test_pmh_run_id_is_used_for_run_and_file_name(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    wanted = "3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60"
+    assert run_pytest(tmp_path, "test_ok.py", extra_env={"PMH_RUN_ID": wanted}).returncode == 0
+    files = list((tmp_path / ".isolated-events").glob("*.jsonl"))
+    assert [f.name for f in files] == [f"{wanted}.jsonl"]
+    assert assert_common(read_events(files[0]), tmp_path) == wanted
+
+
+def test_pmh_run_id_uppercase_uuid_is_normalized(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    wanted = "3F2B8C1E-9D4A-4E6B-8A7C-1B2C3D4E5F60"
+    assert run_pytest(tmp_path, "test_ok.py", extra_env={"PMH_RUN_ID": wanted}).returncode == 0
+    names = [f.name for f in (tmp_path / ".isolated-events").glob("*.jsonl")]
+    assert names == [f"{wanted.lower()}.jsonl"]
+
+
+def test_invalid_pmh_run_id_is_ignored(tmp_path):
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n")
+    folder = tmp_path / ".isolated-events"
+    bad_values = ["../../evil", "not-a-uuid", "3f2b8c1e9d4a4e6b8a7c1b2c3d4e5f60",
+                  "{3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60}", "urn:uuid:3f2b8c1e-9d4a-4e6b-8a7c-1b2c3d4e5f60"]
+    for bad in bad_values:
+        assert run_pytest(tmp_path, "test_ok.py", extra_env={"PMH_RUN_ID": bad}).returncode == 0
+    files = list(folder.glob("*.jsonl"))
+    assert len(files) == len(bad_values)
+    for file in files:
+        run_id = assert_common(read_events(file), tmp_path)
+        assert file.name == f"{run_id}.jsonl"
+        assert run_id.replace("-", "") not in [b.replace("-", "") for b in bad_values]
+    assert not (tmp_path / "evil.jsonl").exists()

@@ -8,6 +8,35 @@ from typing import Any, Iterable
 
 
 CATEGORIES = ("passed", "failed", "error", "skipped", "xfailed", "xpassed", "incomplete")
+# counts에만 들어가는 항목. 테스트 하나의 상태(status)가 아니라
+# "수집됐는데 결과 이벤트가 하나도 없는 테스트 수"라서 CATEGORIES와 따로 둔다.
+# 중지(Ctrl+C), -x 같은 조기 종료 때 수집 수와 합계가 안 맞는 이유를 보여 주려는 값이다.
+COUNT_KEYS = CATEGORIES + ("not_run",)
+
+
+def _not_run(collected_nodeids: list[str] | None, finish: dict[str, Any] | None,
+             reported: set[str]) -> tuple[int, list[str]]:
+    """수집됐지만 결과 이벤트가 전혀 없는 테스트의 수와 nodeid 목록을 구한다.
+
+    매개변수:
+        collected_nodeids: session_collected 이벤트의 nodeids. v1 이벤트처럼 없으면 None.
+        finish: session_finish 이벤트. 아직 끝나지 않았으면 None.
+        reported: setup·call·teardown 중 한 단계라도 보고된 nodeid 집합.
+    반환값:
+        (미실행 수, 미실행 nodeid 목록). 목록은 수집 순서를 따른다.
+        수집 목록 없이 수만 알 때는 목록이 비어 있다.
+    """
+    if collected_nodeids is not None:
+        # 같은 nodeid가 occurrence로 여러 번 돌 수 있어 nodeid 기준으로만 본다.
+        # 한 번이라도 단계가 보고됐으면 미실행이 아니라 incomplete 쪽에서 센다(이중 집계 방지).
+        missing = [node for node in collected_nodeids if node not in reported]
+        return len(missing), missing
+    collected = finish.get("collected") if finish else None
+    if type(collected) is int:
+        # 수집 목록이 없는 이전 이벤트는 수만 비교할 수 있다. 음수가 되지 않게 0으로 막는다.
+        return max(0, collected - len(reported)), []
+    # 수집 정보가 전혀 없으면 알 수 없으므로 0으로 둔다(없는 미실행을 지어내지 않는다).
+    return 0, []
 
 
 def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False) -> dict[str, Any]:
@@ -15,7 +44,8 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
     rows = list(events)
     if not rows:
         return {"state": "waiting", "verdict": None, "run_id": None,
-                "counts": dict.fromkeys(CATEGORIES, 0), "tests": [], "collection_errors": []}
+                "counts": dict.fromkeys(COUNT_KEYS, 0), "tests": [], "not_run": [],
+                "collection_errors": []}
     first = rows[0]
     run_id, root = first.get("run_id"), first.get("project_root")
     if not run_id or not root or first.get("event") != "session_start":
@@ -25,6 +55,7 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
     finish = None
     interrupted = False
     collected = False
+    collected_nodeids: list[str] | None = None
     for index, row in enumerate(rows):
         if row.get("schema_version") not in (1, 2) or row.get("run_id") != run_id or row.get("project_root") != root:
             raise ValueError("서로 다른 실행 또는 지원하지 않는 이벤트가 섞였습니다")
@@ -52,6 +83,10 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
             if collected:
                 raise ValueError("수집 목록 이벤트가 중복되었습니다")
             collected = True
+            nodeids = row.get("nodeids")
+            # 목록 형식이 아니면 미실행 계산에 쓰지 않고 finish.collected로 대신 센다.
+            if isinstance(nodeids, list) and all(isinstance(n, str) for n in nodeids):
+                collected_nodeids = nodeids
         elif kind != "session_start":
             raise ValueError("지원하지 않는 이벤트 종류입니다")
 
@@ -79,8 +114,9 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
         else:
             status = "incomplete"
         tests.append({"nodeid": node, "occurrence": occurrence, "status": status, "phases": phases})
-    counts = dict.fromkeys(CATEGORIES, 0)
+    counts = dict.fromkeys(COUNT_KEYS, 0)
     counts.update(Counter(test["status"] for test in tests))
+    counts["not_run"], not_run = _not_run(collected_nodeids, finish, {node for node, _ in reports})
     if finish is None:
         state = "running" if process_running else "incomplete"
     elif errors:
@@ -91,7 +127,8 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
         state = "no_tests"
     elif finish.get("exit_code") not in (0, 1):
         state = "incomplete"
-    elif counts["incomplete"] or finish.get("collected") != len(tests):
+    # 미실행이 하나라도 있으면 수집 수와 결과 수가 우연히 같아도(재실행 occurrence 등) 완료로 보지 않는다.
+    elif counts["incomplete"] or counts["not_run"] or finish.get("collected") != len(tests):
         state = "incomplete"
     else:
         state = "completed"
@@ -108,7 +145,7 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
     return {"state": state, "verdict": verdict, "run_id": run_id, "project_root": root,
             "env": first.get("env"),
             "exit_code": finish.get("exit_code") if finish else None,
-            "counts": counts, "tests": tests, "collection_errors": errors}
+            "counts": counts, "tests": tests, "not_run": not_run, "collection_errors": errors}
 
 
 def read_jsonl(path: str) -> dict[str, Any]:

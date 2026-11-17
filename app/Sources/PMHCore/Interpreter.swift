@@ -3,6 +3,8 @@ import Foundation
 /// 검사 결과 해석(순수 함수). 프로세스·파일에 접근하지 않는다.
 public enum Interpreter {
     public static let minPython = [3, 9]
+    /// PMH_RUN_ID를 지원하는 첫 플러그인 버전. 이보다 낮으면 앱이 실행 ID를 정할 수 없다.
+    public static let minPluginVersion = [0, 2, 0]
 
     /// 실행 전 단계 실패(경로 없음·실행 불가)를 오류로 바꾼다.
     public static func pathFailure(_ code: IssueCode, path: String) -> EnvCheck {
@@ -55,6 +57,14 @@ public enum Interpreter {
                 message: "pytest-menu-helper 플러그인이 설치되어 있지 않습니다.",
                 fixCommand: "uv pip install --python \(q) -e \(repo)"))
         }
+        if report.pluginInstalled, !pluginSupportsRunID(report.pluginVersion) {
+            let repo = repoPath.map(shellQuote) ?? "<이 저장소 경로>"
+            let have = report.pluginVersion.map { "(설치됨 \($0))" } ?? "(버전 확인 불가)"
+            issues.append(Issue(
+                code: .pluginOutdated, severity: .actionNeeded,
+                message: "플러그인 업데이트가 필요합니다 \(have). 앱이 정한 실행 ID(PMH_RUN_ID)는 \(minPluginVersion.map(String.init).joined(separator: ".")) 이상에서 지원합니다.",
+                fixCommand: "uv pip install --python \(q) -e \(repo)"))
+        }
         if report.fastapiVersion == nil {
             issues.append(Issue(
                 code: .fastapiMissing, severity: .actionNeeded,
@@ -68,6 +78,17 @@ public enum Interpreter {
     private static func failure(_ code: IssueCode, _ message: String) -> EnvCheck {
         EnvCheck(status: .error, report: nil,
                  issues: [Issue(code: code, severity: .error, message: message, fixCommand: nil)])
+    }
+
+    /// "0.2.0", "0.2.0.dev1" 같은 버전의 숫자 부분만 비교한다. 읽을 수 없으면 미지원으로 본다.
+    public static func pluginSupportsRunID(_ version: String?) -> Bool {
+        guard let version = version else { return false }
+        var numbers: [Int] = []
+        for part in version.split(separator: ".") {
+            guard let n = Int(part.prefix(while: \.isNumber)), part.first?.isNumber == true else { break }
+            numbers.append(n)
+        }
+        return !numbers.isEmpty && isAtLeast(numbers, minPluginVersion)
     }
 
     static func isAtLeast(_ v: [Int], _ min: [Int]) -> Bool {

@@ -30,6 +30,19 @@ def events_dir() -> Path:
     return Path(override) if override else DEFAULT_EVENTS_DIR
 
 
+def _requested_run_id() -> str | None:
+    """Run ID chosen by the app (PMH_RUN_ID). Anything but a canonical UUID is ignored,
+    because the value becomes a file name."""
+    value = os.environ.get("PMH_RUN_ID")
+    if not value:
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return None
+    return str(parsed) if str(parsed) == value.lower() else None
+
+
 def _plugin_version() -> str | None:
     try:
         from importlib.metadata import version
@@ -70,7 +83,7 @@ class _Collector:
     def __init__(self, config: pytest.Config, path: str | None) -> None:
         self.config = config
         self.root = Path(config.rootpath).resolve()
-        self.run_id = str(uuid.uuid4())
+        self.run_id = _requested_run_id() or str(uuid.uuid4())
         self.occurrences: dict[str, int] = {}
         self.seq = 0
         self.stream = None

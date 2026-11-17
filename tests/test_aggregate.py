@@ -58,7 +58,7 @@ def test_teardown_error(cleanup_error): pass
     assert result.returncode == 1
     assert summary['state'] == 'completed' and summary['verdict'] == 'failed'
     assert summary['counts'] == {'passed': 1, 'failed': 1, 'error': 2, 'skipped': 1,
-                                  'xfailed': 1, 'xpassed': 2, 'incomplete': 0}
+                                  'xfailed': 1, 'xpassed': 2, 'incomplete': 0, 'not_run': 0}
     assert len(summary['tests']) == 8
     assert sum(e['event'] == 'test_report' for e in events) > 8
 
@@ -163,3 +163,39 @@ def test_stop_after_first_failure_is_incomplete(tmp_path):
     summary = aggregate(events)
     assert summary['state'] == 'incomplete'
     assert summary['counts']['failed'] == 1
+    # -x로 멈추면 뒤의 테스트는 결과 이벤트가 없으므로 미실행으로 센다.
+    assert summary['counts']['not_run'] == 1
+    assert summary['not_run'] == ['test_sample.py::test_other']
+
+
+def test_interrupt_counts_not_run_tests(tmp_path):
+    # 실제 중지(Ctrl+C)와 같은 경로: 두 번째 테스트 도중 KeyboardInterrupt가 나면
+    # 첫 테스트는 통과, 두 번째는 단계가 끊겨 incomplete, 세 번째는 시작 전이라 미실행이다.
+    result, events = run_case(tmp_path, """def test_a(): pass
+def test_b(): raise KeyboardInterrupt
+def test_c(): pass
+""")
+    assert result.returncode == 2
+    summary = aggregate(events)
+    assert summary['state'] == 'interrupted' and summary['verdict'] is None
+    assert summary['counts']['passed'] == 1
+    assert summary['counts']['incomplete'] == 1
+    assert summary['counts']['not_run'] == 1
+    assert summary['not_run'] == ['test_sample.py::test_c']
+
+
+def test_not_run_falls_back_to_finish_collected_without_nodeids():
+    # session_collected가 없는 v1 이벤트는 session_finish의 collected 수로만 센다(목록은 비어 있음).
+    base = {'schema_version': 1, 'run_id': 'r', 'project_root': '/p'}
+    report = dict(base, event='test_report', nodeid='t.py::a', outcome='passed', wasxfail=None)
+    events = [dict(base, event='session_start'),
+              *(dict(report, phase=ph) for ph in ('setup', 'call', 'teardown')),
+              dict(base, event='session_finish', exit_code=1, collected=3)]
+    summary = aggregate(events)
+    assert summary['counts']['not_run'] == 2 and summary['not_run'] == []
+    assert summary['state'] == 'incomplete'
+
+
+def test_waiting_summary_has_not_run_key():
+    summary = aggregate([])
+    assert summary['counts']['not_run'] == 0 and summary['not_run'] == []

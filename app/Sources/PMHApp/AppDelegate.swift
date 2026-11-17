@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registry = Registry()
     private var loadWarning: String?
     private var checks: [String: EnvCheck] = [:] // 환경 id → 결과(없으면 검사 중)
+    /// pytest 실행 담당. 프로세스·파일 읽기·집계는 컨트롤러의 백그라운드 큐에서 하고,
+    /// 변경 알림만 메인 큐로 받아 메뉴를 갱신한다.
+    private lazy var controller = RunController { [weak self] snapshot in self?.runStateChanged(snapshot) }
+    private var runSnapshot = RunSnapshot(active: nil, results: [:])
+    /// 지금 메뉴에 걸려 있는 진행 줄. 메뉴가 열려 있는 동안 제목만 바꾸려고 기억한다.
+    private weak var progressItem: NSMenuItem?
     private lazy var checker: EnvironmentChecker = {
         let repo = Bundle.main.object(forInfoDictionaryKey: "PMHRepoPath") as? String
         return EnvironmentChecker(repoPath: repo)
@@ -41,6 +47,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadWarning = outcome.warning
         for project in registry.projects { for env in project.environments { recheck(env) } }
         rebuildMenu()
+        // 이전 실행이 남긴 이벤트·로그 파일 중 최신 50개만 남긴다(백그라운드).
+        controller.cleanup()
+    }
+
+    /// 앱을 끄면 실행 중인 pytest에 중지 신호(SIGINT)를 보낸다. 자식이 앱보다 오래 남지 않게 하는 최선의 시도다.
+    func applicationWillTerminate(_ notification: Notification) {
+        controller.stop()
+    }
+
+    // MARK: pytest 실행 상태
+
+    /// 컨트롤러가 메인 큐로 알려 준 상태를 반영한다.
+    /// 진행 숫자만 바뀐 경우에는 열려 있는 메뉴의 줄만 고치고, 시작·종료·중지 같은 구조 변화는 메뉴를 다시 만든다.
+    private func runStateChanged(_ snapshot: RunSnapshot) {
+        let old = runSnapshot
+        runSnapshot = snapshot
+        if let a = old.active, let b = snapshot.active, a.runID == b.runID, a.stopping == b.stopping,
+           old.results == snapshot.results, let item = progressItem {
+            item.title = b.phase.text
+            return
+        }
+        rebuildMenu()
+    }
+
+    /// 실행 버튼. 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
+    private func runPytest(_ env: PMHEnvironment, in project: Project) {
+        _ = controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path)
     }
 
     // MARK: 아이콘
@@ -105,12 +138,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             title = "\(env.name) · 검사 중…"
         }
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let runningHere = runSnapshot.active?.envID == env.id ? runSnapshot.active : nil
+        let item = NSMenuItem(title: runningHere.map { "\(title) · \($0.phase.text)" } ?? title,
+                              action: nil, keyEquivalent: "")
         let sub = NSMenu()
+        // 자동 활성화를 끄지 않으면 "pytest 실행" 같은 항목의 비활성 지정이 무시되어 다시 켜진다.
+        sub.autoenablesItems = false
         sub.addItem(infoItem(env.pythonPath))
         if let report = check?.report {
-            sub.addItem(infoItem("pytest \(report.pytestVersion ?? "없음") · FastAPI \(report.fastapiVersion ?? "없음") · 플러그인 \(report.pluginInstalled ? "설치됨" : "없음")"))
+            let pluginText = report.pluginInstalled ? "설치됨 \(report.pluginVersion ?? "(버전 불명)")" : "없음"
+            sub.addItem(infoItem("pytest \(report.pytestVersion ?? "없음") · FastAPI \(report.fastapiVersion ?? "없음") · 플러그인 \(pluginText)"))
         }
+        addRunSection(to: sub, env: env, project: project, check: check, runningHere: runningHere)
         for issue in check?.issues ?? [] {
             sub.addItem(.separator())
             sub.addItem(infoItem("\(issue.severity.label): \(issue.message)"))
@@ -129,6 +168,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sub.addItem(ActionItem("환경 제거") { [weak self] in self?.removeEnvironment(env.id, from: project.id) })
         item.submenu = sub
         return item
+    }
+
+    /// 환경 하위 메뉴의 실행 영역: 실행/중지 버튼, 진행 줄, 마지막 결과 줄.
+    /// 실행 버튼은 앱 전체에서 실행이 없고 환경 검사가 통과했을 때만 켠다(실행 불가 이유는 줄로 보여 준다).
+    private func addRunSection(to sub: NSMenu, env: PMHEnvironment, project: Project,
+                               check: EnvCheck?, runningHere: ActiveRun?) {
+        sub.addItem(.separator())
+        if let active = runningHere {
+            let line = infoItem(active.stopping ? "중지하는 중… (\(active.phase.text))" : active.phase.text)
+            progressItem = active.stopping ? nil : line
+            sub.addItem(line)
+            sub.addItem(ActionItem("중지", enabled: !active.stopping) { [weak self] in self?.controller.stop() })
+        } else {
+            let reason = RunEligibility.reason(for: check)
+            let busy = runSnapshot.active != nil
+            sub.addItem(ActionItem("pytest 실행", enabled: reason == nil && !busy) { [weak self] in
+                self?.runPytest(env, in: project)
+            })
+            if let reason = reason {
+                sub.addItem(infoItem("실행 불가: \(reason)"))
+            } else if busy {
+                sub.addItem(infoItem("다른 환경의 실행이 끝날 때까지 기다리세요(동시에 1건만 실행)."))
+            }
+        }
+        if let outcome = runSnapshot.results[env.id] {
+            sub.addItem(infoItem("마지막 결과: \(outcome.title)"))
+            if let detail = outcome.detail { sub.addItem(infoItem(detail)) }
+        }
     }
 
     // MARK: 동작

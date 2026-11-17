@@ -18,7 +18,7 @@ public enum EnvStatus: Int, Comparable, Codable {
 
 public enum IssueCode: String, Codable {
     case pathMissing, notExecutable, runFailed, timedOut, invalidOutput
-    case pythonTooOld, pytestMissing, pluginMissing, fastapiMissing
+    case pythonTooOld, pytestMissing, pluginMissing, pluginOutdated, fastapiMissing
 }
 
 public struct Issue: Equatable {
@@ -35,12 +35,22 @@ public struct CheckReport: Codable, Equatable {
     public var pytestVersion: String?
     public var fastapiVersion: String?
     public var pluginInstalled: Bool
+    /// 설치된 플러그인 버전. 설치 정보가 없으면 nil(구버전 판정).
+    public var pluginVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case pythonVersion = "python_version"
         case pytestVersion = "pytest_version"
         case fastapiVersion = "fastapi_version"
         case pluginInstalled = "plugin_installed"
+        case pluginVersion = "plugin_version"
+    }
+
+    public init(pythonVersion: [Int], pytestVersion: String?, fastapiVersion: String?,
+                pluginInstalled: Bool, pluginVersion: String? = nil) {
+        self.pythonVersion = pythonVersion; self.pytestVersion = pytestVersion
+        self.fastapiVersion = fastapiVersion; self.pluginInstalled = pluginInstalled
+        self.pluginVersion = pluginVersion
     }
 
     public var pythonVersionText: String { pythonVersion.map(String.init).joined(separator: ".") }
