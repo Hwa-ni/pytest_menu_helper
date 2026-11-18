@@ -8,6 +8,10 @@
 // 화면마다 같은 결과를 다른 말로 부르면 "알림은 실패인데 팝오버는 미완료" 같은 혼란이 생기기 때문이다.
 // 설계 원본: docs/STEP8_DESIGN.md 2절. 결정(2026-11-17): 터미널 실행도 보냄, 중단됨은 보내지 않음,
 // 팝오버가 열려 있어도 보냄.
+// 9단계(docs/STEP9_DESIGN.md 3.4, 7절 결정 5): [모두 실행] 묶음(환경 2개 이상)은 다 끝난 뒤 요약 1건만 보낸다.
+// 제목 "3개 환경 중 1개 실패 · fastapi_demo", 본문 "pmh-3.9 실패 1 · pmh-3.12 통과 · pmh-3.13 통과".
+// 묶음에 든 실행 ID는 모두 처리한 것으로 넣어 낱개 알림이 따로 나가지 않게 한다. 사용자가 ■로 멈춘 환경(대기 취소 포함)은
+// "중단됨"으로 요약에 넣고, 모두 멈췄으면 보내지 않는다. 낱개 ▶와 터미널 실행은 8단계 규칙 그대로 1건씩이다.
 
 import Foundation
 
@@ -46,6 +50,11 @@ public struct CompletionNotice: Equatable {
     public var title: String
     /// 예: "통과 4 · 실패 1 · 2.3초\ntest_main.py::test_fail". 둘째 줄은 실패가 있을 때만.
     public var body: String
+    /// 9단계: 알림을 눌렀을 때 팝오버에서 "환경 비교" 절까지 보여 줄지. 묶음 요약 알림만 true다.
+    public var showsComparison: Bool = false
+    /// 이 알림으로 처리한 실행 ID 전체. 낱개 알림은 [identifier], 묶음 요약은 묶음 ID와 묶음의 실행 ID 모두.
+    /// 비어 있으면 [identifier]로 본다(아래 handledIDs).
+    public var coveredRunIDs: [String] = []
 }
 
 /// 실행 하나에 대한 결정.
@@ -53,13 +62,24 @@ public enum NotificationDecision: Equatable {
     /// 보낸다.
     case send(CompletionNotice)
     /// 보내지 않는다. reason은 로그에 그대로 남길 짧은 이유(예: "중단", "완료 알림 꺼짐").
-    case skip(runID: String, envID: String, reason: String)
+    /// 9단계 묶음 결정이면 runID는 묶음 ID, covered는 묶음의 실행 ID 전체다(낱개 결정은 빈 목록).
+    case skip(runID: String, envID: String, reason: String, covered: [String] = [])
 
-    /// 결정이 가리키는 실행 ID. 처리한 집합에 넣을 때 쓴다.
+    /// 결정이 가리키는 실행 ID(묶음이면 묶음 ID). 로그에 남기는 값이다.
     public var runID: String {
         switch self {
         case .send(let notice): return notice.identifier
-        case .skip(let runID, _, _): return runID
+        case .skip(let runID, _, _, _): return runID
+        }
+    }
+
+    /// 처리한 집합(handled)에 넣을 ID 전체. 낱개는 실행 ID 하나, 묶음은 묶음 ID와 묶음의 실행 ID 전부.
+    /// 묶음의 실행 ID까지 넣는 이유: 묶음이 정리된 뒤(RunController.pruneBatchesLocked)에도 그 결과가 남아 있으면
+    /// 낱개 규칙이 그 실행을 새 결과로 보고 알림을 한 번 더 보낸다.
+    public var handledIDs: [String] {
+        switch self {
+        case .send(let notice): return [notice.identifier] + notice.coveredRunIDs
+        case .skip(let runID, _, _, let covered): return [runID] + covered
         }
     }
 }
@@ -135,14 +155,19 @@ public enum NotificationPresentation {
     ///   - enabled: [완료 알림] 토글. 꺼져 있으면 모든 새 결과를 "보내지 않음"으로 결정한다.
     ///     꺼진 동안의 결과도 처리한 것으로 남겨야, 나중에 토글을 켰을 때 지난 결과가 한꺼번에 오지 않는다.
     /// - Returns: 등록 순서(프로젝트, 환경)대로 정렬한 결정. 같은 실행 ID는 한 번만 들어간다.
+    /// 9단계 묶음: 묶음 단위로 알릴 묶음(환경 2개 이상)의 실행 ID는 낱개로 결정하지 않는다. 묶음이 끝날 때까지 기다렸다가
+    /// 묶음 요약 결정 하나(batchDecisions)로 처리한다. 반환 순서는 낱개 결정(등록 순서) 다음에 묶음 결정(시작 시각 순).
     public static func decisions(registry: Registry, snapshot: RunSnapshot, handled: Set<String>,
                                  enabled: Bool) -> [NotificationDecision] {
         var result: [NotificationDecision] = []
         var seen = handled
+        // 묶음이 맡는 실행 ID. 끝나지 않은 묶음의 실행도 넣는다. 먼저 끝난 환경에 낱개 알림이 나가면 "묶음은 요약 1건"이 깨진다.
+        let groups = snapshot.batches.filter { isGroup($0.value) }
+        let covered = Set(groups.values.flatMap { $0.runIDs.values })
         for project in registry.projects {
             for env in project.environments {
                 guard let outcome = snapshot.results[env.id], let runID = snapshot.runIDs[env.id],
-                      !seen.contains(runID) else { continue }
+                      !seen.contains(runID), !covered.contains(runID) else { continue }
                 seen.insert(runID)
                 if !enabled {
                     result.append(.skip(runID: runID, envID: env.id, reason: disabledReason))
@@ -153,6 +178,83 @@ public enum NotificationPresentation {
                                                elapsed: snapshot.elapsed[env.id], source: snapshot.sources[env.id])))
                 }
             }
+        }
+        result += batchDecisions(registry: registry, snapshot: snapshot, groups: groups, handled: seen, enabled: enabled)
+        return result
+    }
+
+    // MARK: 묶음 요약 (9단계)
+
+    /// 묶음 단위로 알릴 묶음인지. 환경이 1개뿐인 묶음은 낱개 알림 규칙을 따른다(요약 "1개 환경 중 0개 실패"보다
+    /// 환경 이름과 건수가 보이는 낱개 알림이 더 많은 것을 알려 준다). 캐릭터 규칙(CharacterPresentation.isGroup)과 같다.
+    static func isGroup(_ batch: BatchState) -> Bool { batch.envIDs.count >= 2 }
+
+    /// 묶음 요약에 들어갈 환경 한 줄의 상태 문구.
+    /// - Returns: 사용자가 멈춘 환경(대기 취소, 집계 interrupted, 미완료 · 중지함)은 "중단됨", 그 밖은 팝오버 행 문구와 같은 말
+    ///   (ResultPresentation.outcomeStatus). 이 묶음이 낸 결과가 아니면(다른 실행이 덮어씀) nil.
+    static func batchMemberStatus(envID: String, batchID: String, batch: BatchState,
+                                  snapshot: RunSnapshot) -> (text: String, stopped: Bool, outcome: RunOutcome?)? {
+        if batch.cancelledEnvIDs.contains(envID) { return ("중단됨", true, nil) }
+        guard snapshot.batchIDs[envID] == batchID, snapshot.runIDs[envID] == batch.runIDs[envID],
+              let outcome = snapshot.results[envID] else { return nil }
+        if skipReason(outcome) != nil { return ("중단됨", true, outcome) }
+        return (ResultPresentation.outcomeStatus(outcome).text, false, outcome)
+    }
+
+    /// 다 끝난 묶음마다 요약 결정 하나를 만든다. 아직 끝나지 않은 묶음은 건너뛴다(다음 상태에서 다시 본다).
+    /// - Parameters:
+    ///   - groups: 묶음 단위로 알릴 묶음(id → 상태).
+    ///   - handled: 이미 처리한 ID(묶음 ID 포함). 묶음 ID가 있으면 다시 결정하지 않는다.
+    ///   - enabled: [완료 알림] 토글. 꺼져 있으면 "완료 알림 꺼짐"으로 처리만 한다.
+    /// 제목: 실패(넘어진 포즈 조건, CharacterPresentation.pose == .failure)가 있으면 "3개 환경 중 1개 실패 · 프로젝트",
+    ///   모두 통과면 "3개 환경 통과 · 프로젝트", 그 밖은 "3개 환경 중 2개 통과 · 프로젝트".
+    ///   실패를 캐릭터와 같은 기준으로 세는 이유: 알림은 "실패"인데 캐릭터는 갸웃이면 같은 결과를 다르게 부르게 된다.
+    /// 본문: 묶음에 넣은 순서대로 "pmh-3.9 실패 1 · pmh-3.12 통과 · pmh-3.13 중단됨".
+    /// 누르면 실패한 첫 환경(없으면 통과가 아닌 첫 환경, 그것도 없으면 첫 환경)과 환경 비교 절을 보인다.
+    static func batchDecisions(registry: Registry, snapshot: RunSnapshot, groups: [String: BatchState],
+                               handled: Set<String>, enabled: Bool) -> [NotificationDecision] {
+        var envIndex: [String: (project: Project, env: PMHEnvironment)] = [:]
+        for project in registry.projects { for env in project.environments where envIndex[env.id] == nil {
+            envIndex[env.id] = (project, env)
+        } }
+        var result: [NotificationDecision] = []
+        let ordered = groups.sorted { ($0.value.startedAt, $0.key) < ($1.value.startedAt, $1.key) }
+        for (batchID, batch) in ordered where batch.isFinished && !handled.contains(batchID) {
+            // 등록에서 빠진 환경은 요약에서 뺀다(알릴 대상이 없다). 모두 빠졌으면 결정하지 않는다(낱개 규칙과 같다).
+            let members = batch.envIDs.filter { envIndex[$0] != nil }
+            guard let firstEnv = members.first, let projectEntry = envIndex[firstEnv] else { continue }
+            let project = registry.projects.first { $0.path == batch.projectPath } ?? projectEntry.project
+            let covered = batch.envIDs.compactMap { batch.runIDs[$0] }
+            let lines = members.compactMap { envID -> (envID: String, name: String, text: String, stopped: Bool,
+                                                         outcome: RunOutcome?)? in
+                guard let status = batchMemberStatus(envID: envID, batchID: batchID, batch: batch, snapshot: snapshot)
+                else { return nil }
+                return (envID, envIndex[envID]!.env.name, status.text, status.stopped, status.outcome)
+            }
+            if !enabled {
+                result.append(.skip(runID: batchID, envID: firstEnv, reason: disabledReason, covered: covered))
+                continue
+            }
+            // 모두 사용자가 멈췄으면 보내지 않는다(8단계 결정 2와 같은 이유: 멈춘 사람이 이미 안다).
+            // 이 묶음 결과가 하나도 남지 않은 경우(모두 다른 실행으로 바뀜)도 요약할 것이 없어 보내지 않는다.
+            if lines.allSatisfy(\.stopped) {
+                result.append(.skip(runID: batchID, envID: firstEnv, reason: interruptedReason, covered: covered))
+                continue
+            }
+            let poses = lines.map { $0.outcome.map(CharacterPresentation.pose(for:)) }
+            let total = lines.count
+            let failed = poses.filter { $0 == .failure }.count
+            let passed = poses.filter { $0 == .success }.count
+            let head: String
+            if failed > 0 { head = "\(total)개 환경 중 \(failed)개 실패" }
+            else if passed == total { head = "\(total)개 환경 통과" }
+            else { head = "\(total)개 환경 중 \(passed)개 통과" }
+            let focus = zip(lines, poses).first { $0.1 == .failure }?.0.envID
+                ?? zip(lines, poses).first { $0.1 != .success }?.0.envID
+                ?? firstEnv
+            let body = lines.map { "\($0.name) \($0.text)" }.joined(separator: " · ")
+            result.append(.send(CompletionNotice(identifier: batchID, envID: focus, title: "\(head) · \(project.name)",
+                                                 body: body, showsComparison: true, coveredRunIDs: covered)))
         }
         return result
     }

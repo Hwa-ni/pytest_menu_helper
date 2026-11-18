@@ -2,6 +2,8 @@
 // 메뉴 막대 아이콘을 왼쪽 클릭하면 열리는 팝오버의 SwiftUI 화면. 앱의 모든 동작이 이 화면 안에 있다
 // (결과 목록과 실패 상세, 프로젝트·환경 추가와 제거, 다시 검사, 설치 명령 복사, 캐릭터 보이기, 완료 알림, 종료).
 // 8단계: 맨 아래 [완료 알림] 토글과 권한 거부 안내 줄·[설정 열기], 프로젝트 폴더가 없을 때의 오류 줄과 [폴더 다시 지정].
+// 9단계: 프로젝트 줄 [모두 실행]/[모두 중지], 환경별 ▶·■(서로 독립, 차례 기다림 행은 회색·진행 바 없음·■는 대기 취소),
+// 선택한 환경 상세 아래 "환경 비교" 절(결과가 다른 테스트 먼저, 같은 테스트는 "모두 같음 N건" 한 줄로 접음).
 // 입력: PopoverViewModel이 들고 있는 PopoverState(PMHCore의 ResultPresentation이 만든 값)와
 // 화면 안 상태(환경 추가 폼, 제거 확인, 펼친 실패 항목, 알림 문장).
 // 출력: 사용자 동작을 뷰 모델의 콜백으로 넘긴다. 등록 파일 저장·검사·파일 선택 창은 AppDelegate가 한다.
@@ -40,11 +42,19 @@ final class PopoverViewModel: ObservableObject {
     @Published private(set) var notificationsEnabled = true
     /// 토글은 켰는데 권한이 거부됐을 때의 회색 안내(NotificationPresentation.permissionNotice). 없으면 nil.
     @Published private(set) var notificationNotice: String?
+    /// 9단계: "환경 비교" 절에서 모두 같은 테스트 목록을 펼쳤는지. 새로 열 때 접는다.
+    @Published private(set) var comparisonSameExpanded = false
+    /// 9단계: "환경 비교" 절로 스크롤하라는 요청 번호. 바뀔 때마다 화면이 그 절로 스크롤한다(묶음 요약 알림 클릭).
+    /// 번호로 두는 이유: 같은 요청이 연달아 와도(알림 두 번 클릭) 값이 바뀌어야 onChange가 다시 불린다.
+    @Published private(set) var comparisonScrollRequest = 0
+    /// 아직 처리하지 않은 스크롤 요청이 있는지. 팝오버가 뜨기 전에 요청이 오면 화면이 나타날 때(onAppear) 처리한다.
+    var comparisonScrollPending = false
 
     /// 실행(▶) 요청. 매개변수는 환경 id.
     var onRun: (String) -> Void = { _ in }
-    /// 중지(■) 요청. 동시에 1건만 실행되므로 대상 환경을 따로 넘기지 않는다.
-    var onStop: () -> Void = {}
+    /// 중지(■) 요청. 매개변수는 환경 id. 9단계부터 여러 환경이 동시에 돌아 그 행의 환경만 멈춘다
+    /// (차례 기다림이면 대기 취소).
+    var onStop: (String) -> Void = { _ in }
     /// "+ 프로젝트"·"프로젝트 추가". 폴더 선택 창을 여는 일은 AppDelegate가 한다.
     var onAddProject: () -> Void = {}
     /// 폼의 "다른 파일 선택...". 고른 경로는 AppDelegate가 setFormCustomPath로 돌려준다.
@@ -69,6 +79,10 @@ final class PopoverViewModel: ObservableObject {
     var onOpenNotificationSettings: () -> Void = {}
     /// [폴더 다시 지정]. 매개변수는 프로젝트 id. 폴더 선택 창과 저장은 AppDelegate가 한다.
     var onRelocateProject: (UUID) -> Void = { _ in }
+    /// 9단계 [모두 실행]. 매개변수는 프로젝트 id. 실행할 환경 고르기와 시작은 AppDelegate가 한다.
+    var onRunAll: (UUID) -> Void = { _ in }
+    /// 9단계 [모두 중지]. 매개변수는 프로젝트 id. 그 프로젝트의 환경만 멈춘다.
+    var onStopAll: (UUID) -> Void = { _ in }
 
     private var registry = Registry()
     private var checks: [String: EnvCheck] = [:]
@@ -100,8 +114,18 @@ final class PopoverViewModel: ObservableObject {
         preferredProjectID = nil; preferredEnvID = nil
         form = nil
         removalTarget = nil
+        if comparisonSameExpanded { comparisonSameExpanded = false }
         recompute()
     }
+
+    /// "환경 비교" 절로 스크롤해 달라고 요청한다(9단계 묶음 요약 알림 클릭). 절이 없으면(결과 있는 환경이 2개 미만) 아무 일도 없다.
+    func requestComparisonScroll() {
+        comparisonScrollPending = true
+        comparisonScrollRequest += 1
+    }
+
+    /// "모두 같음 N건" 줄을 펼치거나 접는다.
+    func toggleComparisonSame() { comparisonSameExpanded.toggle() }
 
     /// 캐릭터를 눌러 열 때 부른다. 캐릭터가 따르던 환경과 그 프로젝트를 골라 상세에 바로 보여 준다.
     /// 매개변수 envID: 캐릭터가 따르는 환경 id. nil이거나 등록에 없으면 기본 선택(prepareForFreshOpen 결과)을 그대로 둔다.
@@ -235,7 +259,7 @@ final class PopoverViewModel: ObservableObject {
         if let f = form, !registry.projects.contains(where: { $0.id == f.projectID }) { form = nil }
         // 확인 상자는 실행 상태가 바뀔 때마다 다시 만든다. 대상이 사라졌으면 닫는다.
         let nextRemoval = removalTarget.flatMap {
-            ManagementPresentation.confirmation(for: $0, registry: registry, activeEnvID: snapshot.active?.envID)
+            ManagementPresentation.confirmation(for: $0, registry: registry, activeEnvIDs: snapshot.runningEnvIDs)
         }
         if nextRemoval == nil { removalTarget = nil }
         if nextRemoval != removal { removal = nextRemoval }
@@ -283,8 +307,13 @@ struct PopoverRootView: View {
                 // 내용이 많아도 팝오버가 화면을 넘지 않게 가운데만 스크롤한다. 머리와 [종료]는 항상 보인다.
                 // 상한은 화면 높이에서 정한다(ManagementPresentation.maxScrollHeight).
                 // 바깥 .fixedSize 덕분에 내용이 적으면 ScrollView도 내용 높이만큼만 차지한다(아래 frame은 상한일 뿐이다).
-                ScrollView {
-                    scrollContent(state).padding(.trailing, 4)
+                // ScrollViewReader는 9단계 묶음 요약 알림을 눌렀을 때 "환경 비교" 절로 스크롤하는 데 쓴다.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        scrollContent(state).padding(.trailing, 4)
+                    }
+                    .onChange(of: model.comparisonScrollRequest) { _ in scrollToComparison(proxy) }
+                    .onAppear { scrollToComparison(proxy) }
                 }
                 .frame(maxHeight: CGFloat(ManagementPresentation.maxScrollHeight(
                     visibleScreenHeight: NSScreen.main.map { Double($0.visibleFrame.height) })))
@@ -325,6 +354,18 @@ struct PopoverRootView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// 남아 있는 스크롤 요청이 있으면 "환경 비교" 절로 스크롤한다.
+    /// 조금 늦춰 부르는 이유: 요청은 팝오버를 띄우기 직전에 오고, 그 차례에는 선택 환경이 바뀐 새 내용이 아직 그려지지 않아
+    /// 절의 위치를 모른다. 바로 부르면 아무 일도 일어나지 않는다(앞 내용 기준으로 스크롤하거나 대상이 없다).
+    private func scrollToComparison(_ proxy: ScrollViewProxy) {
+        guard model.comparisonScrollPending else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard model.comparisonScrollPending else { return }
+            model.comparisonScrollPending = false
+            withAnimation { proxy.scrollTo(ComparisonView.anchorID, anchor: .top) }
+        }
+    }
+
     /// 프로젝트가 하나도 없을 때: 가운데 큰 "프로젝트 추가" 버튼과 한 줄 안내만.
     @ViewBuilder private func emptyProjects(_ state: PopoverState) -> some View {
         VStack(spacing: 10) {
@@ -342,8 +383,8 @@ struct PopoverRootView: View {
         .padding(.vertical, 24)
     }
 
-    /// 머리: 프로젝트 이름(여럿이면 Picker), "+ 프로젝트", 오른쪽 "⋯"(환경 전체 다시 검사, 프로젝트 제거), 아래에 폴더 경로.
-    /// "전체 실행"은 9단계 몫이라 두지 않는다.
+    /// 머리: 프로젝트 이름(여럿이면 Picker), "+ 프로젝트", 오른쪽 [모두 실행]/[모두 중지](9단계)와
+    /// "⋯"(환경 전체 다시 검사, 프로젝트 제거), 아래에 폴더 경로.
     @ViewBuilder private func header(_ state: PopoverState) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
@@ -363,6 +404,18 @@ struct PopoverRootView: View {
                 .buttonStyle(.borderless)
                 .help("프로젝트 폴더를 추가합니다")
                 Spacer()
+                // 9단계: 그 프로젝트에 앱 실행(차례 기다림 포함)이 있으면 같은 자리가 [모두 중지]가 된다.
+                // 꺼진 이유와 건너뛸 환경은 도움말(마우스 올림)에 있다. 값과 문구는 ResultPresentation.projectRunAction이 정한다.
+                if let projectID = state.selectedProjectID, let action = state.projectRunAction {
+                    switch action {
+                    case .runAll(let enabled, let help):
+                        Button(action: { model.onRunAll(projectID) }) { Label("모두 실행", systemImage: "play.fill") }
+                            .controlSize(.small).disabled(!enabled).help(help)
+                    case .stopAll(let enabled, let help):
+                        Button(action: { model.onStopAll(projectID) }) { Label("모두 중지", systemImage: "stop.fill") }
+                            .controlSize(.small).disabled(!enabled).help(help)
+                    }
+                }
                 if let projectID = state.selectedProjectID {
                     Menu {
                         Button("환경 전체 다시 검사") { model.onRecheckProject(projectID) }
@@ -420,6 +473,11 @@ struct PopoverRootView: View {
             if let detail = state.detail {
                 Divider()
                 DetailView(detail: detail, model: model)
+            }
+            // 9단계: 선택한 환경 상세 아래 "환경 비교" 절. 결과가 있는 환경이 2개 이상일 때만 값이 있다.
+            if let comparison = state.comparison {
+                Divider()
+                ComparisonView(comparison: comparison, model: model).id(ComparisonView.anchorID)
             }
         }
     }
@@ -499,7 +557,7 @@ struct EnvRowView: View {
             Button(action: { model.run(row.id) }) { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless).disabled(!enabled).help(row.actionHelp ?? "")
         case .stop(let enabled):
-            Button(action: { model.onStop() }) { Image(systemName: "stop.fill") }
+            Button(action: { model.onStop(row.id) }) { Image(systemName: "stop.fill") }
                 .buttonStyle(.borderless).disabled(!enabled).help(row.actionHelp ?? "")
         }
     }
@@ -827,6 +885,125 @@ struct SectionView: View {
                 .frame(maxHeight: 220)
                 .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.25)))
+            }
+        }
+    }
+}
+
+/// 9단계 "환경 비교" 절. 열 = 환경(이름·Python 버전·출처·끝난 시각), 행 = 테스트, 칸 = 그 환경에서의 결과.
+/// 결과가 다른 테스트를 먼저 보이고, 모두 같은 테스트는 "모두 같음 N건" 한 줄로 접는다(누르면 펼친다).
+/// 값(정렬, 칸 글자, 경고, 함께/따로 실행 문구)은 모두 PMHCore의 EnvComparison이 정한다. 이 뷰는 그리기만 한다.
+/// 열이 많으면(최대 10개 환경) 표만 가로로 스크롤한다. 팝오버 폭(390pt)은 그대로 둔다.
+struct ComparisonView: View {
+    /// ScrollViewReader가 이 절로 스크롤할 때 쓰는 id.
+    static let anchorID = "pmh.comparison"
+    /// 테스트 이름 칸 폭(pt). nodeid는 길어서 가운데를 줄이고, 전체 이름은 마우스를 올리면 보인다.
+    private static let nameWidth: CGFloat = 140
+    /// 환경 칸 최소 폭(pt). "수집 오류"가 한 줄에 들어가는 폭이다.
+    private static let cellWidth: CGFloat = 72
+    /// 결과가 다른 테스트를 한 번에 그리는 최대 수. 수백 건이 다르면 팝오버가 느려지므로 나머지는 수만 적는다.
+    private static let maxRows = 50
+
+    let comparison: EnvComparisonModel
+    @ObservedObject var model: PopoverViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("환경 비교").font(.system(size: 12, weight: .semibold))
+                if let relation = comparison.relationText {
+                    Text(relation).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            if let warning = comparison.warning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(Color(nsColor: .systemOrange))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(Array(comparison.notes.enumerated()), id: \.offset) { _, note in
+                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if comparison.columns.count >= 2 { table }
+        }
+    }
+
+    /// 비교 표. 열이 3개를 넘으면 가로 스크롤 안에 넣는다(3개까지는 팝오버 폭에 들어간다).
+    @ViewBuilder private var table: some View {
+        if comparison.columns.count > 3 {
+            ScrollView(.horizontal, showsIndicators: true) { grid.padding(.bottom, 6) }
+        } else {
+            grid
+        }
+    }
+
+    private var grid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
+            GridRow {
+                Text("테스트").font(.caption2).foregroundStyle(.secondary)
+                    .frame(width: Self.nameWidth, alignment: .leading)
+                ForEach(comparison.columns) { column in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(column.name).font(.caption.weight(.semibold)).lineLimit(1)
+                            .foregroundStyle(column.isSelected ? Color.accentColor : Color.primary)
+                        Text(column.pythonText).lineLimit(1)
+                        Text(column.sourceText).lineLimit(1)
+                        Text(column.finishedText).lineLimit(1)
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .frame(minWidth: Self.cellWidth, alignment: .leading)
+                    .help("\(column.name) · \(column.pythonText) · \(column.sourceText) · \(column.finishedText)")
+                }
+            }
+            Divider().gridCellUnsizedAxes(.horizontal)
+            if comparison.differingRows.isEmpty {
+                GridRow {
+                    Text("결과가 다른 테스트가 없습니다.").font(.caption).foregroundStyle(.secondary)
+                        .gridCellColumns(comparison.columns.count + 1)
+                }
+            } else {
+                ForEach(comparison.differingRows.prefix(Self.maxRows)) { row in rowView(row) }
+                if comparison.differingRows.count > Self.maxRows {
+                    GridRow {
+                        Text("결과가 다른 테스트 \(comparison.differingRows.count - Self.maxRows)건 더 있음")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .gridCellColumns(comparison.columns.count + 1)
+                    }
+                }
+            }
+            if let same = comparison.sameSummary {
+                GridRow {
+                    Button(action: { model.toggleComparisonSame() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: model.comparisonSameExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                            Text(same).font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("모든 환경에서 결과가 같은 테스트입니다. 누르면 펼칩니다.")
+                    .gridCellColumns(comparison.columns.count + 1)
+                }
+                if model.comparisonSameExpanded {
+                    ForEach(comparison.sameRows.prefix(Self.maxRows)) { row in rowView(row) }
+                }
+            }
+        }
+    }
+
+    /// 표의 한 줄: 테스트 이름과 환경별 칸.
+    private func rowView(_ row: ComparisonRow) -> some View {
+        GridRow {
+            Text(row.title).font(.system(size: 11, design: .monospaced))
+                .lineLimit(1).truncationMode(.middle)
+                .frame(width: Self.nameWidth, alignment: .leading)
+                .help(row.title)
+                .textSelection(.enabled)
+            ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
+                Text(cell.label).font(.caption).lineLimit(1)
+                    .foregroundStyle(cell.tone == .idle ? Color.secondary : toneColor(cell.tone))
+                    .frame(minWidth: Self.cellWidth, alignment: .leading)
             }
         }
     }

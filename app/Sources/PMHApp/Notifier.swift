@@ -2,7 +2,7 @@
 // 8단계 완료 알림. UNUserNotificationCenter를 감싸 권한 읽기·요청, 알림 보내기, 알림 클릭 처리를 맡는다.
 // 입력: AppDelegate가 pushPopoverState마다 넘기는 등록 정보와 합친 실행 상태(RunSnapshot.merged 결과).
 // 출력: 알림 센터 요청, 시스템 로그(category notify), 권한 상태 변경 콜백(팝오버 안내 줄),
-// 알림 클릭 콜백(팝오버를 그 환경으로 연다).
+// 알림 클릭 콜백(팝오버를 그 환경으로 연다. 9단계 묶음 요약이면 환경 비교 절까지 보인다).
 // 보낼지·문구는 PMHCore의 NotificationPresentation(순수 함수, 단위 테스트)이 정한다. 이 파일은 그 결정을 실행만 한다.
 // 알림이 실제로 뜨려면 Bundle ID가 있는 .app + 서명(ad-hoc 이상) + open으로 실행이 모두 필요하다
 // (docs/NOTIFICATION_BUNDLE.md). 번들 없이(swift run 등) UNUserNotificationCenter.current()를 부르면 앱이 죽으므로
@@ -22,10 +22,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let enabledKey = "completionNotificationsEnabled"
     /// 알림 userInfo 키. 클릭했을 때 고를 환경 id.
     private static let envIDKey = "envID"
+    /// 알림 userInfo 키(9단계). true면 클릭했을 때 팝오버의 "환경 비교" 절까지 스크롤한다(묶음 요약 알림).
+    private static let comparisonKey = "showsComparison"
 
     /// 알림 센터. 번들 ID가 없으면 nil(위 파일 설명 참고).
     private let center: UNUserNotificationCenter?
-    /// 이미 보냈거나 보내지 않기로 한 실행 ID(메인 스레드에서만 읽고 쓴다).
+    /// 이미 보냈거나 보내지 않기로 한 실행 ID와 묶음 ID(메인 스레드에서만 읽고 쓴다).
     /// 메모리에만 둔다. 앱을 다시 켜면 비지만, 결과도 메모리에만 있고 6단계 감시기가 앱 시작 전에 끝난 실행을
     /// 무시하므로 같은 실행을 다시 보낼 일이 없다(docs/STEP8_DESIGN.md 2.3).
     private var handled: Set<String> = []
@@ -34,8 +36,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// 권한 상태가 바뀌었을 때(메인 스레드). AppDelegate가 팝오버를 다시 그린다.
     var onAuthorizationChange: (NotificationAuthorization) -> Void = { _ in }
-    /// 알림을 눌렀을 때(메인 스레드). 매개변수는 그 실행의 환경 id.
-    var onOpen: (String) -> Void = { _ in }
+    /// 알림을 눌렀을 때(메인 스레드). 매개변수는 고를 환경 id와, 환경 비교 절까지 보일지(묶음 요약 알림이면 true).
+    var onOpen: (String, Bool) -> Void = { _, _ in }
 
     /// [완료 알림] 토글. 기본은 켬. 바꾸면 바로 저장한다.
     var isEnabled: Bool {
@@ -96,16 +98,17 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// 새로 끝난 실행을 찾아 보낸다(메인 스레드에서 부른다). pushPopoverState마다 불러도 된다.
     /// - Parameters: registry(등록 정보), snapshot(합친 실행 상태).
-    /// 결정은 NotificationPresentation.decisions가 하고, 결정한 실행 ID는 보내든 안 보내든 handled에 넣는다.
+    /// 결정은 NotificationPresentation.decisions가 하고, 결정한 ID(handledIDs: 낱개는 실행 ID, 묶음은 묶음 ID와
+    /// 묶음의 실행 ID 전부)는 보내든 안 보내든 handled에 넣는다.
     /// 권한이 없으면 보내지 않고 "권한 없음"으로 남긴다. 권한 상태는 보낼 때 다시 읽는다.
     /// 시작 때 읽은 값만 믿으면 사용자가 시스템 설정에서 방금 허용한 것을 놓친다.
     func process(registry: Registry, snapshot: RunSnapshot) {
         let decisions = NotificationPresentation.decisions(registry: registry, snapshot: snapshot,
                                                            handled: handled, enabled: isEnabled)
         for decision in decisions {
-            handled.insert(decision.runID)
+            handled.formUnion(decision.handledIDs)
             switch decision {
-            case .skip(let runID, let envID, let reason):
+            case .skip(let runID, let envID, let reason, _):
                 Self.log.notice("알림 보내지 않음(\(reason, privacy: .public)) run=\(runID, privacy: .public) env=\(envID, privacy: .public)")
             case .send(let notice):
                 send(notice)
@@ -130,7 +133,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content.title = notice.title
             content.body = notice.body
             content.sound = .default
-            content.userInfo = [Self.envIDKey: notice.envID]
+            content.userInfo = [Self.envIDKey: notice.envID, Self.comparisonKey: notice.showsComparison]
             // identifier를 실행 ID로 준다. 같은 실행이 어떤 이유로 다시 들어와도 알림 센터가 덮어쓴다(이중 안전장치).
             let request = UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil)
             center.add(request) { error in
@@ -157,11 +160,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// completionHandler는 반드시 불러야 한다. 부르지 않으면 시스템이 응답 처리가 끝나지 않은 것으로 본다.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        let envID = response.notification.request.content.userInfo[Self.envIDKey] as? String
+        let info = response.notification.request.content.userInfo
+        let envID = info[Self.envIDKey] as? String
+        // 8단계 알림에는 이 키가 없다. 없으면 false(환경 상세만)로 본다.
+        let comparison = info[Self.comparisonKey] as? Bool ?? false
         let runID = response.notification.request.identifier
-        Self.log.notice("알림 클릭 run=\(runID, privacy: .public) env=\(envID ?? "-", privacy: .public)")
+        Self.log.notice("알림 클릭 run=\(runID, privacy: .public) env=\(envID ?? "-", privacy: .public) 비교=\(comparison)")
         if let envID = envID {
-            Self.onMain { [weak self] in self?.onOpen(envID) }
+            Self.onMain { [weak self] in self?.onOpen(envID, comparison) }
         }
         completionHandler()
     }

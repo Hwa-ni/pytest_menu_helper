@@ -23,6 +23,9 @@
 // 팝오버 맨 아래 [완료 알림] 토글과, 권한이 거부됐을 때의 안내 줄·[설정 열기]도 여기서 잇는다.
 // 프로젝트 폴더가 없어졌는지는 시작·검사·팝오버 열기 때 확인해(refreshProjectFolders) 프로젝트 줄에 보이고,
 // [폴더 다시 지정]은 환경 등록을 그대로 둔 채 경로만 바꾼다(relocateProject).
+// 9단계: 프로젝트 줄 [모두 실행]은 실행할 수 있는 환경(ResultPresentation.runAllTargets)을 RunController.startAll로
+// 한 묶음으로 시작하고, [모두 중지]는 그 프로젝트의 차례 기다림을 먼저 취소한 뒤 실행 중인 환경을 멈춘다(runAll·stopAll).
+// 묶음 요약 알림을 누르면 실패한 첫 환경을 고르고 "환경 비교" 절까지 스크롤한 팝오버를 연다.
 
 import AppKit
 import os
@@ -71,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         onLog: { message in AppDelegate.log.notice("\(message, privacy: .public)") })
     /// 외부 실행 로그. 개인 정보 가림을 끄는(.public) 이유: 경로·실행 ID를 검증에 그대로 봐야 한다(로컬 기기 로그).
     static let log = Logger(subsystem: "dev.yohwan.pytest-menu-helper", category: "external")
-    private var runSnapshot = RunSnapshot(active: nil, results: [:])
+    private var runSnapshot = RunSnapshot()
     private var externalSnapshot = ExternalSnapshot()
     /// 감시기에 마지막으로 넘긴 매칭 대상. 같으면 다시 넘기지 않는다.
     private var lastTargets: [ProjectTarget]?
@@ -117,8 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 앱을 끄면 실행 중인 pytest를 끝내고 나서 돌아온다.
     /// 일반 stop()을 쓰면 안 되는 이유: 신호를 백그라운드 큐에 넘기기만 해서, 이 함수가 돌아온 직후
     /// 앱 프로세스가 끝나면 SIGINT가 나가지 못하고 pytest가 남는다.
-    /// stopForTermination은 SIGINT를 바로 보내고 최대 2.5초 기다린 뒤, 남아 있으면 SIGKILL한다.
-    /// 메인 스레드를 막는 시간은 실행이 없으면 0, 있어도 약 3초 안이다.
+    /// stopForTermination은 살아 있는 모든 자식에 SIGINT를 한꺼번에 보내고 하나의 마감(최대 2.5초)까지 함께 기다린 뒤,
+    /// 남아 있는 것에 SIGKILL한다. 차례 대기 줄도 비운다.
+    /// 메인 스레드를 막는 시간은 실행이 없으면 0, 있어도 자식 수와 상관없이 약 3초 안이다.
     func applicationWillTerminate(_ notification: Notification) {
         controller.stopForTermination()
     }
@@ -162,7 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 팝오버와 그 안의 SwiftUI 화면을 준비하고, 화면의 동작을 앱 동작에 잇는다.
     private func setupPopover() {
         popoverModel.onRun = { [weak self] envID in self?.runPytest(envID: envID) }
-        popoverModel.onStop = { [weak self] in self?.controller.stop() }
+        popoverModel.onStop = { [weak self] envID in self?.controller.stop(envID: envID) }
+        popoverModel.onRunAll = { [weak self] projectID in self?.runAll(projectID) }
+        popoverModel.onStopAll = { [weak self] projectID in self?.stopAll(projectID) }
         popoverModel.onAddProject = { [weak self] in self?.addProject() }
         popoverModel.onChoosePythonFile = { [weak self] in self?.choosePythonFile() }
         popoverModel.onAddEnvironment = { [weak self] projectID, path, name in
@@ -232,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 완료 알림의 토글·권한 안내·클릭 동작을 팝오버와 잇고, 권한 상태를 읽기 시작한다.
     private func setupNotifier() {
         notifier.onAuthorizationChange = { [weak self] _ in self?.pushNotificationSettings() }
-        notifier.onOpen = { [weak self] envID in self?.openPopover(focusing: envID) }
+        notifier.onOpen = { [weak self] envID, comparison in self?.openPopover(focusing: envID, showComparison: comparison) }
         popoverModel.onToggleNotifications = { [weak self] enabled in
             guard let self = self else { return }
             self.notifier.isEnabled = enabled
@@ -254,15 +260,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     /// 알림을 눌렀을 때. 캐릭터 클릭과 같이 그 환경을 고른 팝오버를 연다.
+    /// 매개변수 showComparison: true면(9단계 묶음 요약 알림) 상세 아래 "환경 비교" 절까지 스크롤한다.
     /// 캐릭터가 보이면 캐릭터 옆에, 숨겼으면 메뉴 막대 아이콘 아래에 연다(전체화면 앱에서는 메뉴 막대가 숨기 때문).
     /// 선택 창이 떠 있으면 열지 않는다. 그 창이 끝나면 runPanelOutsidePopover가 팝오버를 다시 연다.
-    private func openPopover(focusing envID: String) {
+    private func openPopover(focusing envID: String, showComparison: Bool = false) {
         if panelIsOpen { return }
         // 이미 열려 있으면 바로 닫고 다시 연다. performClose는 애니메이션 동안 isShown이 true라 다시 열지 못한다.
         if popover.isShown { popover.close() }
         popoverModel.prepareForFreshOpen()
         relocateError = nil
         popoverModel.focusEnvironment(envID)
+        if showComparison { popoverModel.requestComparisonScroll() }
         let anchor = character?.isVisible == true ? character?.anchorView : nil
         showPopover(fresh: false, anchor: anchor)
     }
@@ -415,13 +423,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 화면에서 버튼을 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때를 대비해 실행 가능 여부를 여기서도 확인한다.
     /// 등록에서 사라진 환경이거나 실행할 수 없는 환경이면 아무것도 하지 않는다.
     /// 같은 순간에 두 번 눌려도 컨트롤러가 1건만 받아들인다(이미 실행 중이면 무시).
+    /// 동시 실행 수가 다 찼으면(화면 갱신 전에 눌린 경우) 컨트롤러가 거절하고, 소리로만 알린다.
     private func runPytest(envID: String) {
         for project in registry.projects {
             guard let env = project.environments.first(where: { $0.id == envID }) else { continue }
             guard let check = checks[envID], RunEligibility.reason(for: check) == nil else { NSSound.beep(); return }
-            _ = controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path)
+            if controller.start(envID: env.id, pythonPath: env.pythonPath, projectPath: project.path) == .limitReached {
+                NSSound.beep()
+            }
             return
         }
+    }
+
+    /// 프로젝트 줄 [모두 실행](9단계). 실행할 수 있는 환경을 한 묶음으로 시작한다. 넘치는 환경은 컨트롤러가 차례 대기 줄에 둔다.
+    /// 매개변수 projectID: 대상 프로젝트. 없는 id면 아무것도 하지 않는다.
+    /// 대상 고르기는 화면 버튼과 같은 함수(runAllTargets)를 쓴다. 플러그인 누락 등으로 빠진 환경은 그 행에 이유가 그대로 남는다.
+    /// 이미 실행 중인 환경은 컨트롤러가 묶음에서 뺀다. 시작한 환경이 하나도 없으면 소리로만 알린다.
+    /// 결과를 시스템 로그(category external)에 남겨, 화면 자동화 없이도 어떤 환경이 묶음에 들어갔는지 확인할 수 있게 한다.
+    private func runAll(_ projectID: UUID) {
+        guard let project = registry.projects.first(where: { $0.id == projectID }) else { return }
+        let targets = ResultPresentation.runAllTargets(project: project, checks: checks)
+            .map { RunTarget(envID: $0.id, pythonPath: $0.pythonPath) }
+        guard !targets.isEmpty else { NSSound.beep(); return }
+        let r = controller.startAll(envs: targets, projectPath: project.path)
+        AppDelegate.log.notice("[모두 실행] \(project.name, privacy: .public) batch=\(r.batchID ?? "-", privacy: .public) 시작=\(r.started.joined(separator: ","), privacy: .public) 대기=\(r.queued.joined(separator: ","), privacy: .public) 이미실행=\(r.alreadyRunning.joined(separator: ","), privacy: .public)")
+        if r.batchID == nil { NSSound.beep() }
+    }
+
+    /// 프로젝트 줄 [모두 중지](9단계). 이 프로젝트의 환경만 멈춘다. 다른 프로젝트의 실행은 그대로 둔다.
+    /// RunController.stopAll을 쓰지 않는 이유: 그 함수는 앱 전체를 멈춘다. 팝오버는 한 번에 한 프로젝트만 보여 주므로
+    /// 보이지 않는 프로젝트의 실행까지 멈추면 사용자가 예상하지 못한다.
+    /// 차례 기다림을 먼저 취소하는 이유는 stopAll과 같다: 실행 중인 것을 먼저 멈추면 그 자리에 대기 환경이 시작된다.
+    /// 대기 취소(stop(envID:)의 대기 분기)는 잠금 안에서 바로 끝나므로, 이 순서대로 부르면 그 사이에 시작될 틈이 없다.
+    private func stopAll(_ projectID: UUID) {
+        guard let project = registry.projects.first(where: { $0.id == projectID }) else { return }
+        let actives = controller.snapshot.actives
+        let mine = project.environments.compactMap { actives[$0.id] }
+        for active in mine where active.isQueued { controller.stop(envID: active.envID) }
+        for active in mine where !active.isQueued { controller.stop(envID: active.envID) }
+        AppDelegate.log.notice("[모두 중지] \(project.name, privacy: .public) 대상=\(mine.map(\.envID).joined(separator: ","), privacy: .public)")
     }
 
     // MARK: 아이콘
@@ -544,17 +584,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         return env.id
     }
 
-    /// 지금 실행 중인 환경 id. 동작 함수의 방어 확인에 쓴다.
+    /// 지금 실행 중이거나 차례를 기다리는 환경 id 전체. 동작 함수의 방어 확인에 쓴다.
     /// 화면용 runSnapshot이 아니라 컨트롤러의 현재 상태를 읽는 이유: 알림이 메인에 닿기 전이라도
     /// 방금 시작된 실행을 놓치지 않기 위함이다.
-    private var activeEnvID: String? { controller.snapshot.active?.envID }
+    private var activeEnvIDs: Set<String> { controller.snapshot.runningEnvIDs }
 
     /// 프로젝트 등록을 지운다. 확인은 팝오버의 인라인 확인 상자에서 이미 받았다.
     /// 매개변수 id: 지울 프로젝트 id. 없는 id거나, 그 프로젝트의 환경이 실행 중이면 아무것도 하지 않는다.
     /// 화면에서 [제거]를 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때(방금 실행 시작)를 대비해 여기서도 막는다.
     private func removeProject(_ id: UUID) {
         guard let project = registry.projects.first(where: { $0.id == id }) else { return }
-        if ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: activeEnvID) != nil {
+        if ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: activeEnvIDs) != nil {
             NSSound.beep(); return
         }
         project.environments.forEach { checks[$0.id] = nil }
@@ -567,7 +607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     /// 매개변수 envID·projectID: 지울 환경과 그 프로젝트. 없는 id거나 그 환경이 실행 중이면 아무것도 하지 않는다.
     private func removeEnvironment(_ envID: String, from projectID: UUID) {
         // 화면에서 꺼 두지만, 화면이 갱신되기 전에 눌렸을 때를 대비해 여기서도 막는다.
-        if ManagementPresentation.environmentRemovalBlockedReason(envID: envID, activeEnvID: activeEnvID) != nil {
+        if ManagementPresentation.environmentRemovalBlockedReason(envID: envID, activeEnvIDs: activeEnvIDs) != nil {
             NSSound.beep(); return
         }
         guard let i = registry.projects.firstIndex(where: { $0.id == projectID }) else { return }

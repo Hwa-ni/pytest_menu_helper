@@ -319,11 +319,12 @@ private final class WatchFixture {
     }
 
     @Test func appRunTakesPrecedenceOverTerminalRunInRow() {
-        var snap = RunSnapshot(active: ActiveRun(runID: "app", envID: "e", projectPath: "/p", phase: .running(done: 0, total: 2), stopping: false))
+        let app = ActiveRun(runID: "app", envID: "e", projectPath: "/p", phase: .running(done: 0, total: 2), stopping: false)
+        var snap = RunSnapshot(actives: ["e": app])
         snap.external["e"] = active()
         let row = ResultPresentation.row(env: env, check: check(), snapshot: snap, selected: true)
         #expect(row.statusText == "실행 중 0/2" && row.action == .stop(enabled: true))
-        let d = ResultPresentation.detail(envID: "e", active: snap.active, outcome: nil, elapsed: nil, blockedReason: nil, external: active())
+        let d = ResultPresentation.detail(envID: "e", active: snap.actives["e"], outcome: nil, elapsed: nil, blockedReason: nil, external: active())
         #expect(d.notes.contains { $0.contains("터미널 실행도 진행 중") })
     }
 

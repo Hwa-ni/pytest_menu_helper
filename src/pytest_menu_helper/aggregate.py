@@ -1,4 +1,10 @@
-"""테스트 단계 이벤트를 실행 단위 결과로 집계한다."""
+"""테스트 단계 이벤트를 실행 단위 결과로 집계한다.
+
+입력: 한 pytest 실행의 이벤트 목록(session_start로 시작하는 JSON 객체들), 또는 JSONL 파일 경로.
+출력: 실행 상태(state)·판정(verdict)·상태별 수(counts)·테스트별 결과(tests)와,
+      session_start에서 옮겨 온 환경 정보(env)·실행 인수(args)를 담은 사전.
+      앱은 `python -I -m pytest_menu_helper.aggregate <파일>`로 이 사전을 JSON으로 받는다.
+"""
 
 from __future__ import annotations
 
@@ -39,11 +45,32 @@ def _not_run(collected_nodeids: list[str] | None, finish: dict[str, Any] | None,
     return 0, []
 
 
+def _start_args(start: dict[str, Any]) -> list[str] | None:
+    """session_start 이벤트의 실행 인수(args)를 집계 결과에 옮길 모양으로 꺼낸다.
+
+    매개변수:
+        start: 실행의 첫 이벤트(session_start).
+    반환값:
+        문자열 목록이면 그 목록의 복사본. 키가 없거나(v1 이벤트, 인수를 남기지 않은 옛 파일)
+        목록이 아니거나 문자열이 아닌 원소가 섞였으면 None.
+    빈 목록([])과 None을 구분하는 이유: []는 "인수 없이 실행했다"는 확인된 사실이고,
+    None은 "알 수 없다"는 뜻이다. 앱의 환경 비교가 실행 조건이 같은지 판단할 때
+    모르는 값을 "인수 없음"으로 보면 서로 다른 조건을 같다고 잘못 볼 수 있다.
+    형식이 틀린 값을 오류(ValueError)로 막지 않는 이유: 인수는 판정에 쓰지 않는 참고 정보라
+    이것 때문에 실행 결과 전체를 "집계 오류"로 만들 필요가 없다.
+    """
+    args = start.get("args")
+    if isinstance(args, list) and all(isinstance(arg, str) for arg in args):
+        return list(args)
+    return None
+
+
 def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False) -> dict[str, Any]:
     """한 실행의 이벤트를 집계한다. 미완료 실행은 호출자가 프로세스 상태를 전달한다."""
     rows = list(events)
     if not rows:
-        return {"state": "waiting", "verdict": None, "run_id": None,
+        # 이벤트가 하나도 없으면 실행 인수도 알 수 없다. 키 모양을 다른 상태와 같게 두려고 None으로 넣는다.
+        return {"state": "waiting", "verdict": None, "run_id": None, "args": None,
                 "counts": dict.fromkeys(COUNT_KEYS, 0), "tests": [], "not_run": [],
                 "collection_errors": []}
     first = rows[0]
@@ -159,6 +186,9 @@ def aggregate(events: Iterable[dict[str, Any]], *, process_running: bool = False
             verdict = "attention"
     return {"state": state, "verdict": verdict, "run_id": run_id, "project_root": root,
             "env": first.get("env"),
+            # args: session_start의 pytest 실행 인수(명령줄에 준 것만, 설정 파일 addopts는 빠짐).
+            # 환경 비교가 "-k·경로 지정 등 실행 조건이 달라 일부 테스트가 빠졌을 수 있음"을 알리는 데 쓴다.
+            "args": _start_args(first),
             "exit_code": finish.get("exit_code") if finish else None,
             "counts": counts, "tests": tests, "not_run": not_run, "collection_errors": errors}
 

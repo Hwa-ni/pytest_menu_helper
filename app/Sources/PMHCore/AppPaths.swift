@@ -116,10 +116,17 @@ public enum FileCleaner {
         return removed
     }
 
-    public static func pruneAll(_ paths: AppPaths, keep: Int = defaultKeep, protectingRunID: String? = nil) {
+    /// 이벤트·로그 폴더를 함께 정리한다.
+    /// - Parameters:
+    ///   - paths: 앱 데이터 폴더.
+    ///   - keep: 폴더마다 남길 최신 파일 수.
+    ///   - runIDs: 지우면 안 되는 실행 ID. 9단계부터 실행 중·차례 기다림인 실행 ID 전부와 방금 끝난 실행 ID를 넘긴다.
+    /// 실행 중인 ID를 모두 넘겨야 하는 이유: 동시 실행 중 한 실행이 끝나 정리하면, 오래 걸려 파일 수정 시각이
+    /// 오래된 다른 실행의 이벤트 파일이 최신 keep개에서 밀려 지워질 수 있다. 그러면 그 실행은 진행률과 판정을 잃는다.
+    public static func pruneAll(_ paths: AppPaths, keep: Int = defaultKeep, protecting runIDs: Set<String> = []) {
         prune(directory: paths.eventsDir, fileExtension: "jsonl", keep: keep,
-              protecting: protectingRunID.map { ["\($0).jsonl"] } ?? [])
+              protecting: Set(runIDs.map { "\($0).jsonl" }))
         prune(directory: paths.logsDir, fileExtension: "log", keep: keep,
-              protecting: protectingRunID.map { ["\($0).log"] } ?? [])
+              protecting: Set(runIDs.map { "\($0).log" }))
     }
 }

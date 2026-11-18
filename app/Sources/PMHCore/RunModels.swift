@@ -142,9 +142,13 @@ public struct RunSummary: Equatable, Decodable {
     public var notRun: [String]
     /// 수집 오류 목록.
     public var collectionErrors: [CollectionErrorRecord]
+    /// 9단계: session_start의 pytest 실행 인수(명령줄에 준 것만, 설정 파일 addopts는 빠진다. docs/EVENTS.md).
+    /// nil은 "알 수 없음"(키가 없는 옛 집계 결과, 형식이 틀린 값), []는 "인수 없이 실행함"이다. 둘을 섞으면
+    /// 환경 비교(EnvComparison)가 서로 다른 실행 조건을 같다고 보거나, 같은 조건을 다르다고 경고한다.
+    public var args: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case state, verdict, counts, tests
+        case state, verdict, counts, tests, args
         case exitCode = "exit_code"
         case runID = "run_id"
         case projectRoot = "project_root"
@@ -154,9 +158,10 @@ public struct RunSummary: Equatable, Decodable {
 
     public init(state: String, verdict: String?, exitCode: Int?, counts: [String: Int], runID: String? = nil,
                 projectRoot: String? = nil, tests: [TestResult] = [], notRun: [String] = [],
-                collectionErrors: [CollectionErrorRecord] = []) {
+                collectionErrors: [CollectionErrorRecord] = [], args: [String]? = nil) {
         self.state = state; self.verdict = verdict; self.exitCode = exitCode; self.counts = counts; self.runID = runID
         self.projectRoot = projectRoot; self.tests = tests; self.notRun = notRun; self.collectionErrors = collectionErrors
+        self.args = args
     }
 
     /// 4단계 형식(목록 필드 없음)도 읽는다. 목록 필드가 없으면 빈 목록으로 둔다.
@@ -172,6 +177,9 @@ public struct RunSummary: Equatable, Decodable {
         tests = try c.decodeIfPresent([TestResult].self, forKey: .tests) ?? []
         notRun = try c.decodeIfPresent([String].self, forKey: .notRun) ?? []
         collectionErrors = try c.decodeIfPresent([CollectionErrorRecord].self, forKey: .collectionErrors) ?? []
+        // args는 판정에 쓰지 않는 참고 정보라, 모양이 틀려도(문자열 목록이 아님) 디코드 실패로 만들지 않고 nil로 둔다.
+        // try?를 빼면 args 하나 때문에 결과 전체가 "집계 결과를 해석하지 못했습니다"가 된다(집계기 쪽 규칙과 같다).
+        args = (try? c.decodeIfPresent([String].self, forKey: .args)) ?? nil
     }
 
     public var title: String {
@@ -245,17 +253,23 @@ public enum RunOutcome: Equatable {
 }
 
 public enum RunPhase: Equatable {
+    /// 9단계: [모두 실행]에서 동시 실행 수(RunSnapshot.runLimit)가 다 차서 차례를 기다린다.
+    /// 프로세스를 아직 띄우지 않았다. 앞 실행이 끝나면 RunController가 자동으로 시작한다.
+    /// 터미널 실행(ExternalActive)에는 쓰지 않는다. 앱이 띄우지 않은 실행에는 대기 줄이 없다.
+    case queued
     case waitingForEvents                    // 프로세스는 살아 있고 이벤트 파일이 아직 없다
     case running(done: Int, total: Int?)
 
     public var text: String {
         switch self {
+        case .queued: return "차례 기다림"
         case .waitingForEvents: return "수집 대기"
         case .running(let done, let total): return "실행 중 \(done)/\(total.map(String.init) ?? "?")"
         }
     }
 }
 
+/// 앱이 맡은 실행 1건(실행 중이거나 차례를 기다리는 중). RunSnapshot.actives의 값이다.
 public struct ActiveRun: Equatable {
     public var runID: String
     public var envID: String
@@ -263,20 +277,58 @@ public struct ActiveRun: Equatable {
     public var phase: RunPhase
     public var stopping: Bool
     /// 시작을 요청한 시각. 팝오버가 실행 중 경과 시간을 보여 줄 때 쓴다. 테스트에서 만든 값은 nil일 수 있다.
+    /// 차례를 기다리던 실행은 대기 줄에 넣은 시각이었다가, 실제로 시작할 때 그 시각으로 바뀐다.
     public var startedAt: Date?
+    /// 9단계: [모두 실행](RunController.startAll)으로 함께 시작한 실행의 묶음 ID. 낱개 ▶로 시작했으면 nil.
+    public var batchID: String?
 
     public init(runID: String, envID: String, projectPath: String, phase: RunPhase, stopping: Bool,
-                startedAt: Date? = nil) {
+                startedAt: Date? = nil, batchID: String? = nil) {
         self.runID = runID; self.envID = envID; self.projectPath = projectPath
-        self.phase = phase; self.stopping = stopping; self.startedAt = startedAt
+        self.phase = phase; self.stopping = stopping; self.startedAt = startedAt; self.batchID = batchID
+    }
+
+    /// 차례를 기다리는 중인지(프로세스를 아직 띄우지 않았다).
+    public var isQueued: Bool { phase == .queued }
+}
+
+/// 9단계: [모두 실행]으로 함께 시작한 묶음 1개의 상태. RunSnapshot.batches의 값이다.
+/// 캐릭터·알림·환경 비교가 "같이 돌린 결과"를 묶는 기준이다(그 화면은 이 값을 읽기만 한다).
+public struct BatchState: Equatable {
+    /// 묶음에 든 환경 id(시작을 요청한 순서). 이미 실행 중이라 빠진 환경은 들어 있지 않다.
+    public var envIDs: [String]
+    /// 환경 id → 그 환경에 정한 실행 ID. 알림이 묶음의 실행 ID를 모두 "처리함"으로 넣을 때 쓴다.
+    public var runIDs: [String: String]
+    /// 묶음을 시작한 프로젝트 폴더.
+    public var projectPath: String
+    /// 묶음을 시작한 시각.
+    public var startedAt: Date
+    /// 결과가 정해진 환경 id(정상 종료·중지·실행 오류 모두 포함).
+    public var completedEnvIDs: Set<String> = []
+    /// 차례를 기다리다 사용자가 ■로 취소한 환경 id. 실행하지 않았으므로 결과가 없다.
+    public var cancelledEnvIDs: Set<String> = []
+    /// 모든 환경이 끝나거나 취소된 시각. 아직 남은 환경이 있으면 nil.
+    public var finishedAt: Date?
+
+    public init(envIDs: [String], runIDs: [String: String], projectPath: String, startedAt: Date,
+                completedEnvIDs: Set<String> = [], cancelledEnvIDs: Set<String> = [], finishedAt: Date? = nil) {
+        self.envIDs = envIDs; self.runIDs = runIDs; self.projectPath = projectPath; self.startedAt = startedAt
+        self.completedEnvIDs = completedEnvIDs; self.cancelledEnvIDs = cancelledEnvIDs; self.finishedAt = finishedAt
+    }
+
+    /// 묶음의 모든 환경이 끝났거나(결과 있음) 취소됐는지.
+    public var isFinished: Bool {
+        envIDs.allSatisfy { completedEnvIDs.contains($0) || cancelledEnvIDs.contains($0) }
     }
 }
 
 /// 실행 상태 전체. 결과는 메모리에만 있고 앱을 다시 시작하면 사라진다(보존은 11단계).
-/// RunController는 앱 실행 값(active, results, elapsed, finishedAt)만 채운다.
+/// RunController는 앱 실행 값(actives, results, elapsed, finishedAt, runIDs, batchIDs, batches, runLimit)만 채운다.
 /// 외부 실행 값(external, sources, unregistered)은 merged(external:)가 감시기 상태를 합쳐 채운다.
 public struct RunSnapshot: Equatable {
-    public var active: ActiveRun?
+    /// 9단계: 환경 id → 앱이 맡은 실행(실행 중 또는 차례 기다림). 한 환경에는 동시에 1건만 있다.
+    /// 같은 가상환경을 두 번 동시에 돌리면 결과 키가 겹치고 비교 의미도 없어서다.
+    public var actives: [String: ActiveRun]
     public var results: [String: RunOutcome] // 환경 id → 마지막 결과
     /// 환경 id → 마지막 실행의 소요 시간(초). pytest 프로세스 시작부터 종료까지이며 집계 호출 시간은 뺀다.
     /// 시작하지 못한 실행(launchFailed)은 값이 없다.
@@ -288,13 +340,43 @@ public struct RunSnapshot: Equatable {
     /// 환경 id → 마지막 결과를 낸 실행 ID(8단계). 완료 알림을 실행마다 한 번만 보내는 데 쓴다
     /// (NotificationPresentation.decisions). 결과(results)와 함께 바뀐다. 키가 없으면 실행 ID를 모르는 결과다.
     public var runIDs: [String: String] = [:]
+    /// 9단계: 환경 id → 마지막 결과를 낸 실행의 묶음 ID. 낱개 ▶나 터미널 실행 결과면 키가 없다.
+    /// 결과(results)와 함께 바뀐다. 같은 환경을 낱개로 다시 돌리면 키가 지워진다.
+    public var batchIDs: [String: String] = [:]
+    /// 9단계: 묶음 ID → 묶음 상태. 끝나지 않았거나, 끝났어도 어느 환경의 결과(batchIDs)가 아직 그 묶음을
+    /// 가리키는 묶음만 남는다. 모든 환경이 다른 실행으로 바뀐 묶음은 RunController가 지운다.
+    public var batches: [String: BatchState] = [:]
+    /// 9단계: 앱이 동시에 띄울 수 있는 실행 수(RunController.maxConcurrentRuns, 테스트에서는 바꿀 수 있다).
+    /// 화면이 ▶를 끌지와 도움말 숫자를 이 값으로 정한다.
+    public var runLimit: Int = RunController.maxConcurrentRuns
     /// 환경 id → 진행 중인 외부 실행(같은 환경에 여럿이면 가장 나중에 시작한 것).
     public var external: [String: ExternalActive] = [:]
     /// 등록하지 않은 환경에서 실행한 최근 외부 실행(감시기 값 그대로).
     public var unregistered: [UnregisteredRun] = []
 
-    public init(active: ActiveRun? = nil, results: [String: RunOutcome] = [:], elapsed: [String: TimeInterval] = [:]) {
-        self.active = active; self.results = results; self.elapsed = elapsed
+    public init(actives: [String: ActiveRun] = [:], results: [String: RunOutcome] = [:],
+                elapsed: [String: TimeInterval] = [:]) {
+        self.actives = actives; self.results = results; self.elapsed = elapsed
+    }
+
+    /// 프로세스를 띄운(차례 기다림이 아닌) 실행 수. 동시 실행 제한은 이 수로 센다.
+    public var runningCount: Int { actives.values.filter { !$0.isQueued }.count }
+
+    /// 동시 실행 수가 다 차서 낱개 ▶를 더 받을 수 없는지.
+    public var isAtRunLimit: Bool { runningCount >= runLimit }
+
+    /// 앱이 맡은 실행이 있는 환경 id 전체(차례 기다림 포함). 환경·프로젝트 제거 막기에 쓴다.
+    /// 차례 기다림도 넣는 이유: 대기 중인 환경을 지우면 그 행(■ 대기 취소)이 사라져 대기를 취소할 수 없고,
+    /// 나중에 등록에 없는 환경이 저절로 실행된다.
+    public var runningEnvIDs: Set<String> { Set(actives.keys) }
+
+    /// 프로세스를 띄운 실행 중 가장 나중에 시작한 것. 팝오버 기본 선택처럼 "지금 돌고 있는 하나"가 필요할 때 쓴다.
+    /// 시작 시각이 없는 값(테스트에서 만든 값)은 가장 늦은 것으로 본다. 같으면 환경 id 순서로 정해 결과가 흔들리지 않게 한다.
+    public var latestActive: ActiveRun? {
+        actives.values.filter { !$0.isQueued }.max {
+            let l = $0.startedAt ?? .distantFuture, r = $1.startedAt ?? .distantFuture
+            return l != r ? l < r : $0.envID > $1.envID
+        }
     }
 
     /// 앱 실행 상태(self)에 외부 실행 상태를 합친다. 순수 함수다.
@@ -303,6 +385,7 @@ public struct RunSnapshot: Equatable {
     /// 규칙: 앱 결과가 없거나, 앱 결과 시각을 모르거나(이전 형식 값), 외부 결과가 더 늦게 끝났으면 외부 결과를 쓴다.
     /// 같은 실행이 두 번 보이지 않는 이유: 감시기는 앱이 시작한 실행 ID를 처음부터 제외하므로
     /// 한 실행은 앱 쪽 또는 외부 쪽 한 곳에만 있다.
+    /// 9단계 필드: actives·batches·runLimit은 앱 실행 값이라 그대로 둔다. batchIDs는 아래 규칙을 따른다.
     public func merged(external ext: ExternalSnapshot) -> RunSnapshot {
         var s = self
         for (envID, r) in ext.results {
@@ -313,6 +396,10 @@ public struct RunSnapshot: Equatable {
             s.sources[envID] = .terminal
             // 결과와 실행 ID를 같이 바꾼다. 빠뜨리면 터미널 결과에 앱 실행 ID가 붙어 알림이 중복되거나 빠진다.
             s.runIDs[envID] = r.runID
+            // 터미널 결과는 어느 묶음에도 속하지 않으므로 묶음 ID를 지운다. 남기면 캐릭터·알림·비교가
+            // 터미널에서 따로 돌린 결과를 "함께 실행한 묶음"의 결과로 세어, 같은 시점 비교라고 잘못 보여 준다.
+            // batches는 지우지 않는다. 묶음이 끝났는지는 앱 실행 기준이고, 결과가 바뀐 환경은 batchIDs로 가린다.
+            s.batchIDs[envID] = nil
         }
         // active는 시작 시각 순이라 뒤의 것이 덮어써 "가장 나중에 시작한 실행"이 남는다.
         for a in ext.active { s.external[a.envID] = a }
@@ -321,9 +408,43 @@ public struct RunSnapshot: Equatable {
     }
 }
 
+/// 낱개 시작(RunController.start)의 결과.
 public enum StartResult: Equatable {
     case started(runID: String)
+    /// 이 환경이 이미 실행 중이거나 차례를 기다리는 중이다(한 환경에는 동시에 1건만).
     case alreadyRunning
+    /// 9단계: 동시 실행 수(RunSnapshot.runLimit)가 다 찼다. 낱개 ▶는 대기 줄에 넣지 않고 거절한다.
+    case limitReached
+}
+
+/// 9단계: [모두 실행]에 넘기는 환경 1개.
+public struct RunTarget: Equatable {
+    /// 등록한 환경 id. 결과와 실행 상태의 키이며 자식 프로세스의 PMH_ENV_ID다.
+    public var envID: String
+    /// 이 환경의 python 경로. 앱은 이 python의 `-m pytest`만 실행한다.
+    public var pythonPath: String
+
+    public init(envID: String, pythonPath: String) { self.envID = envID; self.pythonPath = pythonPath }
+}
+
+/// 9단계: [모두 실행](RunController.startAll)의 결과.
+public struct BatchStartResult: Equatable {
+    /// 만든 묶음 ID. 시작하거나 대기 줄에 넣은 환경이 하나도 없으면 nil(묶음을 만들지 않았다).
+    public var batchID: String?
+    /// 바로 시작한 환경 id(요청 순서).
+    public var started: [String]
+    /// 동시 실행 수가 다 차서 대기 줄에 넣은 환경 id(요청 순서). 앞 실행이 끝나면 자동으로 시작한다.
+    public var queued: [String]
+    /// 이미 실행 중이거나 대기 중이라 묶음에 넣지 않은 환경 id.
+    public var alreadyRunning: [String]
+    /// 환경 id → 정한 실행 ID(시작·대기 모두).
+    public var runIDs: [String: String]
+
+    public init(batchID: String?, started: [String], queued: [String], alreadyRunning: [String],
+                runIDs: [String: String]) {
+        self.batchID = batchID; self.started = started; self.queued = queued
+        self.alreadyRunning = alreadyRunning; self.runIDs = runIDs
+    }
 }
 
 /// 실행 버튼을 켤 수 있는지. 환경 검사 결과로만 판단한다.

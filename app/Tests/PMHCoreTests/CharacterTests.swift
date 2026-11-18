@@ -135,11 +135,11 @@ private func external(_ envID: String, run: String, started: TimeInterval, known
         let registry = twoEnvRegistry()
         var active = ActiveRun(runID: "r", envID: "a", projectPath: "/work/proj", phase: .waitingForEvents,
                                stopping: false, startedAt: t(1))
-        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(active: active)).label == "수집 대기")
+        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(actives: [active.envID: active])).label == "수집 대기")
         active.phase = .running(done: 2, total: 5)
-        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(active: active)).label == "실행 중 2/5")
+        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(actives: [active.envID: active])).label == "실행 중 2/5")
         active.stopping = true
-        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(active: active)).label == "중지하는 중…")
+        #expect(CharacterPresentation.state(registry: registry, snapshot: RunSnapshot(actives: [active.envID: active])).label == "중지하는 중…")
         let ext = RunSnapshot().merged(external: ExternalSnapshot(active: [external("b", run: "x", started: 5)]))
         #expect(CharacterPresentation.state(registry: registry, snapshot: ext).label == "터미널 실행 중 1/5")
         let unknown = RunSnapshot().merged(external: ExternalSnapshot(active: [external("b", run: "x", started: 5, known: false)]))
@@ -172,7 +172,7 @@ private func external(_ envID: String, run: String, started: TimeInterval, known
     @Test func appRunIsRunning() {
         let active = ActiveRun(runID: "r1", envID: "a", projectPath: "/work/proj", phase: .waitingForEvents,
                                stopping: false, startedAt: t(10))
-        let s = CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: RunSnapshot(active: active))
+        let s = CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: RunSnapshot(actives: [active.envID: active]))
         #expect(s.pose == .running)
         #expect(s.envID == "a")
         #expect(s.key == "run:r1")
@@ -193,9 +193,9 @@ private func external(_ envID: String, run: String, started: TimeInterval, known
     @Test func latestStartedRunWins() {
         let active = ActiveRun(runID: "r1", envID: "a", projectPath: "/work/proj", phase: .running(done: 0, total: 5),
                                stopping: false, startedAt: t(10))
-        let later = RunSnapshot(active: active).merged(external: ExternalSnapshot(active: [external("b", run: "x1", started: 20)]))
+        let later = RunSnapshot(actives: [active.envID: active]).merged(external: ExternalSnapshot(active: [external("b", run: "x1", started: 20)]))
         #expect(CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: later).envID == "b")
-        let earlier = RunSnapshot(active: active).merged(external: ExternalSnapshot(active: [external("b", run: "x1", started: 5)]))
+        let earlier = RunSnapshot(actives: [active.envID: active]).merged(external: ExternalSnapshot(active: [external("b", run: "x1", started: 5)]))
         #expect(CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: earlier).envID == "a")
     }
 
@@ -244,7 +244,7 @@ private func external(_ envID: String, run: String, started: TimeInterval, known
         snap.finishedAt["gone"] = t(99)
         #expect(CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: snap) == .idle)
         let active = ActiveRun(runID: "r", envID: "gone", projectPath: "/x", phase: .waitingForEvents, stopping: false)
-        #expect(CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: RunSnapshot(active: active)) == .idle)
+        #expect(CharacterPresentation.state(registry: twoEnvRegistry(), snapshot: RunSnapshot(actives: [active.envID: active])) == .idle)
     }
 
     /// 상태 확인 불가 터미널 실행은 달리기가 아니라 갸웃 포즈다. 그보다 나중에 끝난 결과가 있으면 결과를 따른다.

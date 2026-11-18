@@ -158,8 +158,8 @@ private func pluginMissingCheck() -> EnvCheck {
     }
 
     @Test func runningRowShowsProgressAndStop() {
-        let snap = RunSnapshot(active: ActiveRun(runID: "r", envID: "e1", projectPath: "/w",
-                                                 phase: .running(done: 2, total: 5), stopping: false))
+        let snap = RunSnapshot(actives: ["e1": ActiveRun(runID: "r", envID: "e1", projectPath: "/w",
+                                                         phase: .running(done: 2, total: 5), stopping: false)])
         let row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: snap, selected: true)
         #expect(row.action == .stop(enabled: true))
         #expect(row.statusText == "실행 중 2/5" && row.tone == .running)
@@ -169,21 +169,62 @@ private func pluginMissingCheck() -> EnvCheck {
 
     @Test func waitingAndStoppingRows() {
         var active = ActiveRun(runID: "r", envID: "e1", projectPath: "/w", phase: .waitingForEvents, stopping: false)
-        var row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: RunSnapshot(active: active), selected: false)
+        var row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: RunSnapshot(actives: [active.envID: active]), selected: false)
         #expect(row.indeterminate && row.progress == nil && row.statusText == "수집 대기")
         active.stopping = true
-        row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: RunSnapshot(active: active), selected: false)
+        row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: RunSnapshot(actives: [active.envID: active]), selected: false)
         #expect(row.action == .stop(enabled: false) && row.statusText == "중지하는 중…")
     }
 
-    /// 동시 실행은 앱 전체 1건이라, 다른 환경이 실행 중이면 이 환경의 ▶는 꺼진다.
-    @Test func otherEnvironmentRunningDisablesRun() {
-        let snap = RunSnapshot(active: ActiveRun(runID: "r", envID: "other", projectPath: "/w",
-                                                 phase: .waitingForEvents, stopping: false))
+    /// 9단계: 다른 환경이 실행 중이어도 이 환경의 ▶는 켜져 있다(환경별 ▶·■는 서로 독립).
+    @Test func otherEnvironmentRunningKeepsRunEnabled() {
+        let snap = RunSnapshot(actives: ["other": ActiveRun(runID: "r", envID: "other", projectPath: "/w",
+                                                            phase: .waitingForEvents, stopping: false)])
         let row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: snap, selected: false)
-        #expect(row.action == .run(enabled: false))
-        #expect(row.actionHelp?.contains("동시에 1건") == true)
+        #expect(row.action == .run(enabled: true))
+        #expect(row.actionHelp == "pytest를 실행합니다.")
         #expect(row.statusText == "실행 전")
+        #expect(row.removeBlockedReason == nil) // 다른 환경의 실행은 이 환경 제거를 막지 않는다
+    }
+
+    /// 9단계: 동시 실행 수가 다 차면 실행 중이 아닌 환경의 ▶를 끄고 이유를 도움말에 적는다.
+    /// 차례 기다림은 수에 세지 않는다(프로세스가 없다). 실행 불가 이유가 있으면 그 이유가 먼저다.
+    @Test func runLimitDisablesRunWithHelp() {
+        var snap = RunSnapshot()
+        snap.runLimit = 2
+        for id in ["x", "y"] {
+            snap.actives[id] = ActiveRun(runID: "r-\(id)", envID: id, projectPath: "/w", phase: .running(done: 0, total: 1), stopping: false)
+        }
+        var row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: snap, selected: false)
+        #expect(row.action == .run(enabled: false))
+        #expect(row.actionHelp == "동시 실행은 2개까지입니다.")
+        // 기본 상한 10이면 문구도 10이다.
+        #expect(RunSnapshot().runLimit == 10 && RunController.maxConcurrentRuns == 10)
+        // 실행 중인 환경 자신은 ■가 그대로 켜져 있다.
+        let own = ResultPresentation.row(env: PMHEnvironment(id: "x", name: "x", pythonPath: "/x"), check: readyCheck(),
+                                         snapshot: snap, selected: false)
+        #expect(own.action == .stop(enabled: true))
+        // 하나가 차례 기다림이면 실행 수는 1이라 ▶가 켜진다.
+        snap.actives["y"]?.phase = .queued
+        row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: snap, selected: false)
+        #expect(row.action == .run(enabled: true))
+        // 실행 불가 이유가 있으면 상한보다 그 이유가 도움말에 먼저 나온다.
+        snap.actives["y"]?.phase = .running(done: 0, total: 1)
+        row = ResultPresentation.row(env: env, check: pluginMissingCheck(), snapshot: snap, selected: false)
+        #expect(row.actionHelp == "플러그인이 없습니다")
+    }
+
+    /// 9단계: 차례 기다림 행은 진행 바 없이 "차례 기다림"과 대기 취소 ■를 보인다. 제거는 막힌다.
+    @Test func queuedRowShowsWaitAndCancel() {
+        let queued = ActiveRun(runID: "q", envID: "e1", projectPath: "/w", phase: .queued, stopping: false, batchID: "b")
+        let snap = RunSnapshot(actives: ["e1": queued])
+        let row = ResultPresentation.row(env: env, check: readyCheck(), snapshot: snap, selected: true)
+        #expect(row.statusText == "차례 기다림")
+        #expect(row.action == .stop(enabled: true) && row.actionHelp == "차례 기다림을 취소합니다.")
+        #expect(row.progress == nil && !row.indeterminate)
+        #expect(row.removeBlockedReason == ManagementPresentation.removeBlockedReason)
+        let d = ResultPresentation.detail(envID: "e1", active: queued, outcome: nil, elapsed: nil, blockedReason: nil)
+        #expect(d.headline == "차례 기다림" && d.liveStartedAt == nil)
     }
 
     @Test func checkingAndUnavailableRows() throws {
@@ -269,8 +310,8 @@ private func pluginMissingCheck() -> EnvCheck {
                                              preferredProjectID: nil, preferredEnvID: nil)
         #expect(state.selectedProjectID == a.id && state.selectedEnvID == "e1")
         #expect(state.rows.map(\.id) == ["e1", "e2"] && state.rows.map(\.isSelected) == [true, false])
-        let running = RunSnapshot(active: ActiveRun(runID: "r", envID: "e2", projectPath: "/w/a",
-                                                    phase: .running(done: 1, total: 3), stopping: false, startedAt: Date()))
+        let running = RunSnapshot(actives: ["e2": ActiveRun(runID: "r", envID: "e2", projectPath: "/w/a",
+                                                            phase: .running(done: 1, total: 3), stopping: false, startedAt: Date())])
         state = ResultPresentation.build(registry: reg, checks: checks, snapshot: running,
                                          preferredProjectID: nil, preferredEnvID: nil)
         #expect(state.selectedEnvID == "e2")

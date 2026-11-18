@@ -13,6 +13,15 @@
 // - 모든 포즈에서 캐릭터 아래에 상태 글씨를 보인다(사용자 요청 2026-11-17). 글씨는 팝오버 환경 행 문구와 같다
 //   (ResultPresentation.activeStatusText·externalStatusText·resultStatusText를 그대로 쓴다). 대기는 "실행 전".
 //   진행 글씨("실행 중 2/5")가 바뀌어도 key는 그대로라 달리기 애니메이션은 처음부터 다시 시작하지 않는다.
+// 9단계 묶음 규칙(설계 docs/STEP9_DESIGN.md 3.3, 7절 결정 4):
+// - [모두 실행]으로 함께 시작한 묶음(환경 2개 이상)은 실행 하나가 아니라 묶음 하나로 따른다.
+//   실행 중이면 달리기 + "3개 환경 실행 중"(끝난 환경이 있으면 "3개 환경 중 1개 끝남").
+//   다 끝나면 하나라도 실패(넘어진 포즈 조건)면 넘어짐 + "1/3 환경 실패", 모두 통과면 점프 + "3개 환경 통과",
+//   그 밖(확인 필요·중단·차례 기다림 취소가 섞임)은 갸웃 + "3개 환경 중 2개 통과".
+// - 도움말(마우스 올림)에는 묶음의 환경마다 한 줄씩 "pmh-3.9 · 실패 1"을 붙인다.
+// - 묶음이 아닌 낱개 실행과 터미널 실행은 이전 규칙 그대로다. 묶음은 "시작 시각(실행 중)·끝난 시각(결과)"을 가진
+//   후보 하나로 낱개 후보와 함께 겨루고, 가장 나중 것을 따른다.
+// - 환경이 1개뿐인 묶음은 낱개와 같이 다룬다. "1개 환경 통과"보다 환경 이름이 보이는 낱개 문구가 더 많은 것을 알려 준다.
 // 판정 자체는 Python 집계기가 정한 값을 그대로 옮긴다. 여기서는 "어떤 포즈로 보여 줄지"만 정한다.
 
 import Foundation
@@ -115,11 +124,34 @@ public enum CharacterPresentation {
             }
         }
 
+        // 9단계: 묶음 단위로 따를 묶음(환경 2개 이상, 등록된 환경이 하나라도 있음). 이 묶음에 든 앱 실행과 결과는
+        // 아래 낱개 후보에서 빼고 묶음 후보 하나로 센다.
+        let groups = snapshot.batches.filter { isGroup($0.value, registered: envs) }
+
         // 1. 살아 있는 실행.
         // text는 행 문구와 같은 진행 글씨(캐릭터 아래 글씨와 도움말에 쓴다).
-        struct Live { var envID: String; var runID: String; var startedAt: Date; var terminal: Bool; var text: String }
+        // batchID가 있으면 묶음 후보다(envID·runID·text는 쓰지 않고 batchState가 정한다).
+        struct Live { var envID: String; var runID: String; var startedAt: Date; var terminal: Bool; var text: String
+                      var batchID: String? = nil }
         var live: [Live] = []
-        if let active = snapshot.active, envs[active.envID] != nil {
+        // 실행 중인 묶음을 맨 앞에 넣는다. 시작 시각이 같으면 묶음이 이긴다(max(by:)는 먼저 나온 것을 남긴다).
+        // 묶음 id 순서로 넣어 같은 시각의 두 묶음 사이에서도 결과가 흔들리지 않게 한다.
+        // 프로세스를 띄운(차례 기다림이 아닌) 멤버가 하나 이상인 묶음만 넣는다. 동시 실행 수가 다른 실행으로 다 찬 상태에서
+        // [모두 실행]을 누르면 멤버가 모두 차례 기다림인데, 그 묶음이 이기면 "N개 환경 실행 중"으로 달리며 실제로 도는
+        // 낱개 실행을 가린다(9단계 리뷰 결함 3). 낱개 실행의 차례 기다림을 달리기로 보지 않는 규칙과 같다.
+        for (id, batch) in groups.sorted(by: { $0.key < $1.key }) where !batch.isFinished
+            && batch.envIDs.contains(where: { env in
+                snapshot.actives[env].map { $0.batchID == id && !$0.isQueued } ?? false
+            }) {
+            live.append(Live(envID: "", runID: "", startedAt: batch.startedAt, terminal: false, text: "", batchID: id))
+        }
+        // 9단계: 앱 실행이 여럿일 수 있어 모두 넣고 아래 "가장 나중 것" 규칙으로 하나를 고른다.
+        // 등록 순서로 넣는 이유: 시작 시각이 같을 때 먼저 등록한 환경이 이겨 결과가 흔들리지 않게 한다.
+        // 차례 기다림은 넣지 않는다. 프로세스가 없어 "달리기"가 사실이 아니다(묶음이면 묶음 후보가 대신 센다).
+        for envID in order {
+            guard let active = snapshot.actives[envID], !active.isQueued else { continue }
+            // 묶음 실행은 묶음 후보로 이미 들어갔다. 끝난 묶음(isFinished)에는 실행이 남아 있지 않다.
+            if let id = active.batchID, groups[id] != nil { continue }
             // 앱 실행의 시작 시각이 없으면(테스트에서 만든 값) 가장 늦은 것으로 본다. 앱이 띄운 실행은 지금 돌고 있다는 것이 확실하다.
             live.append(Live(envID: active.envID, runID: active.runID, startedAt: active.startedAt ?? .distantFuture,
                              terminal: false, text: ResultPresentation.activeStatusText(active)))
@@ -136,6 +168,9 @@ public enum CharacterPresentation {
         }
         // max(by:)는 같은 값이면 먼저 나온 것을 남긴다. 앱 실행을 맨 앞에 넣었으므로 시각이 같으면 앱 실행이 이긴다
         // (같은 시각은 실제로 거의 없다). 순서를 바꾸고 싶으면 여기서 비교 기준을 바꿔야 한다.
+        if let latest = live.max(by: { $0.startedAt < $1.startedAt }), let id = latest.batchID, let batch = groups[id] {
+            return runningBatchState(id: id, batch: batch, envs: envs, snapshot: snapshot)
+        }
         if let latest = live.max(by: { $0.startedAt < $1.startedAt }), let entry = envs[latest.envID] {
             // key는 실행 id만 쓴다. 진행 글씨가 바뀌어도 key가 같아 달리기 애니메이션이 끊기지 않는다.
             return CharacterState(pose: .running, label: latest.text, envID: latest.envID, key: "run:\(latest.runID)",
@@ -144,8 +179,17 @@ public enum CharacterPresentation {
 
         // 2. 끝난 결과와 상태 확인 불가 실행 중 가장 나중 것.
         var best: (time: Date, state: CharacterState)?
+        // 끝난 묶음을 먼저 넣는다. 같은 시각이면 묶음 후보가 남는다(아래 비교가 >라 먼저 넣은 것을 유지한다).
+        for (id, batch) in groups.sorted(by: { $0.key < $1.key }) where batch.isFinished {
+            if let candidate = finishedBatchState(id: id, batch: batch, envs: envs, snapshot: snapshot),
+               best == nil || candidate.time > best!.time {
+                best = candidate
+            }
+        }
         for envID in order {
             guard let outcome = snapshot.results[envID], let entry = envs[envID] else { continue }
+            // 묶음 결과는 위 묶음 후보로 셌다. 같은 환경을 낱개로 다시 돌리면 batchIDs가 지워져 여기서 다시 센다.
+            if let id = snapshot.batchIDs[envID], groups[id] != nil { continue }
             // 끝난 시각을 모르는 결과(이전 형식 값)는 가장 이른 것으로 본다. 시각이 있는 결과가 있으면 그쪽을 따른다.
             let time = snapshot.finishedAt[envID] ?? .distantPast
             // 글씨는 행 문구와 같다(터미널 결과면 " · 터미널"이 붙는다).
@@ -167,6 +211,93 @@ public enum CharacterPresentation {
             if best == nil || time > best!.time { best = (time, candidate) }
         }
         return best?.state ?? .idle
+    }
+
+    // MARK: 묶음 (9단계)
+
+    /// 묶음 단위로 따를 묶음인지. 환경이 2개 이상이고 그중 등록된 환경이 하나라도 있어야 한다.
+    /// 등록에서 빠진 환경만 남은 묶음을 따르면, 제거한 환경의 결과가 캐릭터에 남아 보인다.
+    static func isGroup(_ batch: BatchState, registered: [String: (project: Project, env: PMHEnvironment)]) -> Bool {
+        batch.envIDs.count >= 2 && batch.envIDs.contains { registered[$0] != nil }
+    }
+
+    /// 묶음 도움말의 환경 한 줄. 예: "pmh-3.9 · 실패 1", "pmh-3.13 · 실행 중 2/5", "pmh-3.12 · 차례 기다림 취소".
+    /// 결과는 이 묶음이 낸 것(batchIDs가 이 묶음)만 쓴다. 다른 실행 결과를 붙이면 "함께 돌린 결과"로 잘못 읽힌다.
+    static func batchMemberLine(envID: String, batchID: String, batch: BatchState, name: String,
+                                snapshot: RunSnapshot) -> String {
+        let text: String
+        if batch.cancelledEnvIDs.contains(envID) {
+            text = "차례 기다림 취소"
+        } else if let active = snapshot.actives[envID], active.batchID == batchID {
+            text = ResultPresentation.activeStatusText(active)
+        } else if snapshot.batchIDs[envID] == batchID, let outcome = snapshot.results[envID] {
+            text = ResultPresentation.resultStatusText(outcome, source: snapshot.sources[envID])
+        } else {
+            // 이 묶음에서 끝났지만 그 뒤 다른 실행(낱개·터미널)이 결과를 바꾼 환경.
+            text = "다른 실행 결과로 바뀜"
+        }
+        return "\(name) · \(text)"
+    }
+
+    /// 실행 중인 묶음의 캐릭터 상태.
+    /// 글씨: 끝난 환경이 없으면 "3개 환경 실행 중", 있으면 "3개 환경 중 1개 끝남". 차례 기다림을 취소한 환경은 세지 않는다.
+    /// key는 묶음 id만 써서, 환경 하나가 끝나 글씨가 바뀌어도 달리기 애니메이션이 처음부터 다시 시작하지 않는다.
+    /// 클릭하면 실제로 돌고 있는 첫 환경(등록 순서가 아니라 묶음에 넣은 순서)을 보여 준다.
+    static func runningBatchState(id: String, batch: BatchState,
+                                  envs: [String: (project: Project, env: PMHEnvironment)],
+                                  snapshot: RunSnapshot) -> CharacterState {
+        let members = batch.envIDs.filter { envs[$0] != nil }
+        let counted = members.filter { !batch.cancelledEnvIDs.contains($0) }
+        let done = counted.filter { batch.completedEnvIDs.contains($0) }.count
+        let label = done == 0 ? "\(counted.count)개 환경 실행 중" : "\(counted.count)개 환경 중 \(done)개 끝남"
+        let focus = members.first { snapshot.actives[$0].map { !$0.isQueued && $0.batchID == id } ?? false }
+            ?? members.first
+        let project = members.first.flatMap { envs[$0]?.project.name } ?? ""
+        let lines = members.map { batchMemberLine(envID: $0, batchID: id, batch: batch, name: envs[$0]!.env.name,
+                                                  snapshot: snapshot) }
+        return CharacterState(pose: .running, label: label, envID: focus, key: "batch:\(id)",
+                              help: ([project.isEmpty ? label : "\(project) · \(label)"] + lines).joined(separator: "\n"))
+    }
+
+    /// 다 끝난 묶음의 캐릭터 상태와 비교 시각.
+    /// - Returns: 이 묶음이 낸 결과가 하나도 남지 않았으면(모두 취소, 또는 모두 다른 실행으로 바뀜) nil.
+    ///   시각은 묶음이 끝난 시각(없으면 결과 중 가장 늦은 끝난 시각)이다.
+    /// 포즈: 이 묶음 결과 중 하나라도 넘어진 포즈 조건(pose(for:) == .failure)이면 넘어짐 "1/3 환경 실패",
+    ///   모두 성공이고 취소한 환경도 없으면 점프 "3개 환경 통과", 그 밖은 갸웃 "3개 환경 중 2개 통과".
+    ///   취소한 환경을 통과로 세지 않는 이유: 실행하지 않은 환경이 있는데 점프하면 "모두 통과"로 읽힌다.
+    /// 클릭하면 실패한 첫 환경, 없으면 통과가 아닌 첫 환경, 그것도 없으면 첫 환경을 보여 준다.
+    static func finishedBatchState(id: String, batch: BatchState,
+                                   envs: [String: (project: Project, env: PMHEnvironment)],
+                                   snapshot: RunSnapshot) -> (time: Date, state: CharacterState)? {
+        let members = batch.envIDs.filter { envs[$0] != nil }
+        let mine = members.filter { snapshot.batchIDs[$0] == id && snapshot.results[$0] != nil }
+        guard !mine.isEmpty else { return nil }
+        let cancelled = members.filter { batch.cancelledEnvIDs.contains($0) }
+        let poses = mine.map { pose(for: snapshot.results[$0]!) }
+        let total = mine.count + cancelled.count
+        let failed = poses.filter { $0 == .failure }.count
+        let passed = poses.filter { $0 == .success }.count
+        let pose: CharacterPose
+        let label: String
+        if failed > 0 {
+            pose = .failure; label = "\(failed)/\(total) 환경 실패"
+        } else if passed == total {
+            pose = .success; label = "\(total)개 환경 통과"
+        } else {
+            pose = .attention; label = "\(total)개 환경 중 \(passed)개 통과"
+        }
+        let focus = zip(mine, poses).first { $0.1 == .failure }?.0
+            ?? zip(mine, poses).first { $0.1 != .success }?.0
+            ?? mine.first
+        let time = batch.finishedAt ?? mine.compactMap { snapshot.finishedAt[$0] }.max() ?? .distantPast
+        let project = envs[mine[0]]?.project.name ?? ""
+        let lines = members.map { batchMemberLine(envID: $0, batchID: id, batch: batch, name: envs[$0]!.env.name,
+                                                  snapshot: snapshot) }
+        // key에 끝난 시각을 넣는다. 같은 묶음 값이 다시 와도 key가 같아 넘어지는 동작을 다시 재생하지 않는다.
+        let state = CharacterState(pose: pose, label: label, envID: focus,
+                                   key: "batch-result:\(id):\(time.timeIntervalSince1970)",
+                                   help: (["\(project) · \(label)"] + lines).joined(separator: "\n"))
+        return (time, state)
     }
 }
 

@@ -29,6 +29,13 @@ public struct SystemProcessRunner: ProcessRunning {
         p.standardOutput = out
         p.standardError = err
         p.standardInput = FileHandle.nullDevice
+        // 종료는 terminationHandler로 받는다(run 전에 걸어야 아주 빨리 끝나는 자식도 놓치지 않는다).
+        // waitUntilExit를 쓰지 않는 이유: 백그라운드 스레드에서 waitUntilExit가 자식이 이미 끝났는데도
+        // 돌아오지 않는 일이 있었다(9단계, 테스트 15회 중 1회꼴로 집계가 30초 멈춤. 9단계 이전 코드에서도 재현).
+        // 멈춘 프로세스를 sample로 보면 이 줄의 waitUntilExit 안에서 런루프만 돌고 있었다.
+        // terminationHandler를 쓰는 RunController의 pytest 종료는 같은 상황에서도 모두 들어왔다.
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
         do { try p.run() } catch {
             return ProcessOutput(exitCode: 127, stdout: Data(), stderr: "\(error)", timedOut: false)
         }
@@ -40,8 +47,6 @@ public struct SystemProcessRunner: ProcessRunning {
         group.enter()
         DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
 
-        let exited = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { p.waitUntilExit(); exited.signal() }
         var timedOut = false
         if exited.wait(timeout: .now() + timeout) == .timedOut {
             timedOut = true

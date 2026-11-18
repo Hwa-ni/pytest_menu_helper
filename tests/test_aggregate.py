@@ -261,3 +261,65 @@ def test_not_run_falls_back_to_finish_collected_without_nodeids():
 def test_waiting_summary_has_not_run_key():
     summary = aggregate([])
     assert summary['counts']['not_run'] == 0 and summary['not_run'] == []
+
+
+# 9단계: 집계 결과에 session_start의 실행 인수(args)를 싣는다.
+# 앱의 환경 비교가 환경마다 실행 조건(-k, 경로 지정 등)이 같은지 보려고 쓴다.
+
+def test_args_from_real_run_are_copied_to_summary(tmp_path):
+    """실제 pytest 실행의 명령줄 인수가 집계 결과 args에 순서 그대로 들어가는지 본다."""
+    result, events = run_case(tmp_path, 'def test_a(): pass\ndef test_b(): pass\n', '-k', 'test_a')
+    assert result.returncode == 0
+    summary = aggregate(events)
+    assert summary['args'] == events[0]['args']
+    # run_case가 붙이는 -p, --menu-events 등도 명령줄 인수이므로 함께 남는다. -k 조건이 순서대로 있는지만 본다.
+    position = summary['args'].index('-k')
+    assert summary['args'][position + 1] == 'test_a'
+    assert summary['args'][-1] == str(tmp_path / 'test_sample.py')
+
+
+def test_args_absent_in_old_events_is_null():
+    """args가 없는 옛 이벤트(v1, 또는 v2지만 키가 빠진 파일)는 빈 목록이 아니라 None이어야 한다."""
+    base = {'schema_version': 2, 'run_id': 'r', 'project_root': '/p'}
+    events = [dict(base, event='session_start'), dict(base, event='session_finish', exit_code=5, collected=0)]
+    assert aggregate(events)['args'] is None
+    v1 = [dict(event, schema_version=1) for event in events]
+    assert aggregate(v1)['args'] is None
+
+
+@pytest.mark.parametrize('value, expected', [
+    ([], []),                      # 인수 없이 실행: 확인된 빈 목록은 그대로 둔다
+    (['-x', 'tests'], ['-x', 'tests']),
+    ('-x tests', None),            # 목록이 아니면 알 수 없음
+    (['-x', 3], None),             # 문자열이 아닌 원소가 섞이면 알 수 없음
+    (None, None),
+])
+def test_args_shape_is_checked(value, expected):
+    """형식이 틀린 args는 집계 오류로 만들지 않고 None으로 둔다. 빈 목록은 None과 구분한다."""
+    base = {'schema_version': 2, 'run_id': 'r', 'project_root': '/p'}
+    events = [dict(base, event='session_start', args=value),
+              dict(base, event='session_finish', exit_code=5, collected=0)]
+    summary = aggregate(events)
+    assert summary['args'] == expected
+    assert summary['state'] == 'no_tests'
+
+
+def test_waiting_summary_has_null_args():
+    """이벤트가 없을 때도 args 키가 있어야 앱 쪽 디코드가 상태마다 달라지지 않는다."""
+    assert aggregate([])['args'] is None
+
+
+def test_cli_json_includes_args(tmp_path):
+    """앱이 실제로 부르는 방식(python -I -m pytest_menu_helper.aggregate)의 JSON 출력에 args가 있는지 본다.
+
+    -I(격리 모드)는 PYTHONPATH를 무시하므로 src를 sys.path에 직접 넣고 모듈을 실행한다.
+    """
+    result, events = run_case(tmp_path, 'def test_a(): pass\n', '-q')
+    assert result.returncode == 0
+    events_file = tmp_path / 'events.jsonl'
+    code = ('import runpy, sys; sys.path.insert(0, sys.argv[1]); sys.argv = sys.argv[1:]; '
+            'runpy.run_module("pytest_menu_helper.aggregate", run_name="__main__")')
+    output = subprocess.run([sys.executable, '-I', '-c', code, str(ROOT / 'src'), str(events_file)],
+                            capture_output=True, text=True, timeout=30, check=True)
+    summary = json.loads(output.stdout)
+    assert summary['args'] == events[0]['args'] and '-q' in summary['args']

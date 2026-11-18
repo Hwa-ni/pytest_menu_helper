@@ -4,8 +4,8 @@
 // 출력: PopoverState. 화면은 이 값을 그대로 그리기만 하고 판정이나 건수 계산을 하지 않는다.
 // 판정(성공·실패 등)은 여전히 Python 집계기가 정한 값(RunSummary)을 옮겨 쓴다. 여기서는 표시 문구와
 // 링·건수·실패 목록처럼 "보여 주는 방법"만 정한다.
-// 9단계(다중 환경 동시 실행)를 위해 환경을 항상 목록(rows)으로 다룬다. 지금은 동시에 1건만 실행되지만
-// 행마다 상태·진행을 따로 계산하므로, 실행이 여러 건이 되어도 이 구조를 그대로 쓸 수 있다.
+// 환경을 항상 목록(rows)으로 다루고 행마다 상태·진행을 따로 계산한다. 9단계부터 여러 환경이 동시에 돌고,
+// 프로젝트 줄의 [모두 실행]/[모두 중지](projectRunAction)와 상세 아래 "환경 비교" 절(EnvComparison)도 여기서 채운다.
 // 관리 동작용 값(행의 조치 줄·제거 막기 이유, 상세의 환경 정보, 프로젝트 제거 막기 이유)은
 // ManagementPresentation의 함수로 만들어 여기서 함께 채운다. 그래서 팝오버는 PopoverState 하나만 보고 그린다.
 // 6단계: 다른 터미널에서 실행한 pytest(외부 실행)도 같은 환경 행에 합쳐 보여 준다(사용자 결정 A, 2026-11-17).
@@ -143,6 +143,15 @@ public struct EnvRowModel: Equatable, Identifiable {
     public var removeBlockedReason: String? = nil
 }
 
+/// 9단계: 프로젝트 줄의 [모두 실행]/[모두 중지] 버튼(설계 3.1). 그 프로젝트에 앱 실행(차례 기다림 포함)이
+/// 하나라도 있으면 같은 자리가 [모두 중지]가 된다.
+public enum ProjectRunAction: Equatable {
+    /// [모두 실행]. 검사 통과·플러그인 있는 환경만 시작한다. 실행할 환경이 없으면 꺼진다.
+    case runAll(enabled: Bool, help: String)
+    /// [모두 중지]. 이 프로젝트의 차례 기다림을 먼저 취소하고 실행 중인 환경을 멈춘다. 모두 중지하는 중이면 꺼진다.
+    case stopAll(enabled: Bool, help: String)
+}
+
 /// 프로젝트 고르기 목록의 항목.
 public struct ProjectOption: Equatable, Identifiable {
     public var id: UUID
@@ -166,6 +175,10 @@ public struct PopoverState: Equatable {
     public var terminalNotice: String? = nil
     /// 선택한 프로젝트 폴더가 없을 때 프로젝트 줄에 보일 오류 문장(8단계). 있으면 [폴더 다시 지정]도 보인다.
     public var projectFolderError: String? = nil
+    /// 9단계: 프로젝트 줄의 [모두 실행]/[모두 중지]. 환경이 없는 프로젝트면 nil(버튼을 숨긴다).
+    public var projectRunAction: ProjectRunAction? = nil
+    /// 9단계: 선택한 환경 상세 아래 "환경 비교" 절. 프로젝트에 결과가 있는 환경이 2개 미만이면 nil(절을 숨긴다).
+    public var comparison: EnvComparisonModel? = nil
 
     /// 빈 상태(프로젝트 없음). 화면 쪽 뷰 모델의 첫 값으로 쓴다.
     public static let empty = PopoverState(projects: [], selectedProjectID: nil, rows: [], selectedEnvID: nil,
@@ -278,7 +291,8 @@ public enum ResultPresentation {
     /// - Parameters:
     ///   - env: 환경 등록 정보.
     ///   - check: 검사 결과. nil이면 검사 중.
-    ///   - snapshot: 실행 상태. 앱 전체에서 실행 중인 것이 있으면 다른 환경의 ▶를 끈다.
+    ///   - snapshot: 실행 상태. 9단계부터 다른 환경이 실행 중이어도 ▶는 켜 둔다.
+    ///     동시 실행 수(snapshot.runLimit)가 다 찼을 때만 실행 중이 아닌 환경의 ▶를 끈다.
     ///   - selected: 이 행이 선택됐는지.
     /// 문구 우선순위: 이 환경 실행 중 > 검사 중 > 실행 불가 > 마지막 결과 > 실행 전.
     /// 실행 불가를 마지막 결과보다 앞에 두는 이유: 지금 누를 수 없는 이유가 지난 결과보다 먼저 필요하다
@@ -291,13 +305,22 @@ public enum ResultPresentation {
         // 조치 줄과 제거 막기는 실행 중 여부와 상관없이 채운다(실행 중 행에서도 "⋯ > 환경 제거"가 꺼져 보여야 한다).
         row.issues = ManagementPresentation.issueLines(check)
         row.removeBlockedReason = ManagementPresentation.environmentRemovalBlockedReason(
-            envID: env.id, activeEnvID: snapshot.active?.envID)
-        if let active = snapshot.active, active.envID == env.id {
+            envID: env.id, activeEnvIDs: snapshot.runningEnvIDs)
+        // 차례 기다림(9단계 3.1): 프로세스가 없어 진행 바를 그리지 않고(회색 문구, tone idle), ■는 대기 취소다.
+        if let active = snapshot.actives[env.id], active.isQueued {
+            row.tone = .idle
+            row.action = .stop(enabled: true)
+            row.actionHelp = "차례 기다림을 취소합니다."
+            row.statusText = activeStatusText(active)
+            return row
+        }
+        if let active = snapshot.actives[env.id] {
             row.tone = .running
             row.action = .stop(enabled: !active.stopping)
             row.actionHelp = active.stopping ? "중지하는 중입니다." : "실행을 중지합니다."
             switch active.phase {
-            case .waitingForEvents:
+            case .waitingForEvents, .queued:
+                // .queued는 위에서 이미 돌아갔다. switch를 빠짐없이 쓰려고 같은 줄에 둔다.
                 row.indeterminate = true
             case .running(let done, let total):
                 if let total = total, total > 0 {
@@ -312,9 +335,11 @@ public enum ResultPresentation {
             return row
         }
         let reason = RunEligibility.reason(for: check)
-        let busy = snapshot.active != nil
+        // 9단계: "다른 환경이 실행 중"은 더 이상 막는 이유가 아니다. 앱 전체 동시 실행 수가 다 찼을 때만 끈다.
+        // 실행 불가 이유(reason)를 먼저 보이는 이유: 자리가 나도 이 환경은 여전히 누를 수 없기 때문이다.
+        let busy = snapshot.isAtRunLimit
         row.action = .run(enabled: reason == nil && !busy)
-        row.actionHelp = reason ?? (busy ? "다른 환경이 실행 중입니다(동시에 1건만 실행)." : "pytest를 실행합니다.")
+        row.actionHelp = reason ?? (busy ? "동시 실행은 \(snapshot.runLimit)개까지입니다." : "pytest를 실행합니다.")
         // 터미널 실행 중: 앱 실행 다음으로 앞선다(지금 실제로 돌고 있는 것이 지난 결과·검사 상태보다 중요하다).
         // ▶는 위에서 정한 그대로 둔다. 앱이 그 프로세스를 띄우지 않았으므로 ■(중지)는 없다.
         if let ext = snapshot.external[env.id] {
@@ -476,6 +501,11 @@ public enum ResultPresentation {
             model.headline = active.stopping ? "중지하는 중… (\(active.phase.text))" : active.phase.text
             model.tone = .running
             switch active.phase {
+            case .queued:
+                // 아직 띄우지 않았다. 진행 링은 빈 채로 두고 왜 기다리는지 적는다.
+                model.tone = .idle
+                model.notes = ["동시 실행 수가 다 차서 차례를 기다립니다. 앞 실행이 끝나면 자동으로 시작합니다."]
+                return model
             case .waitingForEvents: model.progressRing = progressRing(done: 0, total: nil)
             case .running(let done, let total): model.progressRing = progressRing(done: done, total: total)
             }
@@ -534,6 +564,41 @@ public enum ResultPresentation {
         return model
     }
 
+    // MARK: [모두 실행]·[모두 중지] (9단계)
+
+    /// [모두 실행]이 시작할 환경. 검사가 끝났고 실행 불가 이유(RunEligibility)가 없는 환경만, 등록 순서대로.
+    /// 화면의 버튼 상태와 AppDelegate의 실제 시작이 같은 함수를 써서, 화면이 켜 둔 환경과 시작하는 환경이 어긋나지 않는다.
+    /// 플러그인 누락 등으로 빠진 환경은 그 행에 이유가 그대로 보인다(독립 처리, 설계 3.1).
+    public static func runAllTargets(project: Project, checks: [String: EnvCheck]) -> [PMHEnvironment] {
+        project.environments.filter { env in checks[env.id].map { RunEligibility.reason(for: $0) == nil } ?? false }
+    }
+
+    /// 프로젝트 줄 버튼 값.
+    /// - Parameters: project(선택한 프로젝트), checks(검사 결과), snapshot(실행 상태).
+    /// - Returns: 환경이 없으면 nil. 이 프로젝트에 앱 실행이나 차례 기다림이 있으면 [모두 중지], 아니면 [모두 실행].
+    /// [모두 실행]은 동시 실행 수가 다 차도 켜 둔다. 넘치는 환경은 차례를 기다렸다가 시작하기 때문이다(7절 결정 2).
+    /// 터미널 실행은 앱이 멈출 수 없어 [모두 중지] 판단에 넣지 않는다.
+    public static func projectRunAction(project: Project, checks: [String: EnvCheck],
+                                        snapshot: RunSnapshot) -> ProjectRunAction? {
+        guard !project.environments.isEmpty else { return nil }
+        let mine = project.environments.compactMap { snapshot.actives[$0.id] }
+        if !mine.isEmpty {
+            // 대기 취소는 언제든 할 수 있고, 실행 중인 것은 이미 중지하는 중이면 다시 누를 이유가 없다.
+            let canStop = mine.contains { $0.isQueued || !$0.stopping }
+            return .stopAll(enabled: canStop, help: canStop
+                            ? "이 프로젝트의 실행을 모두 중지합니다. 차례를 기다리는 환경은 취소합니다."
+                            : "중지하는 중입니다.")
+        }
+        let targets = runAllTargets(project: project, checks: checks)
+        guard !targets.isEmpty else {
+            return .runAll(enabled: false, help: "실행할 수 있는 환경이 없습니다. 각 환경 행의 문제를 먼저 해결하세요.")
+        }
+        var help = "실행할 수 있는 \(targets.count)개 환경을 함께 실행합니다. 동시 실행은 \(snapshot.runLimit)개까지이고 넘치면 차례를 기다립니다."
+        let skipped = project.environments.filter { env in !targets.contains { $0.id == env.id } }.map(\.name)
+        if !skipped.isEmpty { help += " 건너뜀: \(skipped.joined(separator: ", "))(행의 이유 참고)" }
+        return .runAll(enabled: true, help: help)
+    }
+
     // MARK: 팝오버 전체
 
     /// 팝오버 전체 상태를 만든다.
@@ -555,7 +620,8 @@ public enum ResultPresentation {
             state.emptyMessage = "등록한 프로젝트가 없습니다. \"프로젝트 추가\"를 눌러 pytest를 쓸 폴더를 고르세요."
             return state
         }
-        let activeEnv = snapshot.active?.envID
+        // 동시 실행 중이면 가장 나중에 시작한 앱 실행을 기본 선택 기준으로 쓴다(차례 기다림은 뺀다).
+        let activeEnv = snapshot.latestActive?.envID
         // 기본 선택에 쓸 "지금 돌고 있는" 환경: 앱 실행이 먼저, 없으면 가장 나중에 시작한 터미널 실행.
         let liveEnv = activeEnv ?? snapshot.external.values.max {
             ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast)
@@ -567,7 +633,8 @@ public enum ResultPresentation {
         state.selectedProjectPath = project.path
         // 폴더 없음은 환경 목록보다 먼저 정한다. 환경이 없는 프로젝트(아래 조기 반환)에서도 보여야 한다.
         state.projectFolderError = missingFolders.contains(project.id) ? ProjectFolderCheck.missingMessage : nil
-        state.projectRemoveBlockedReason = ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: activeEnv)
+        state.projectRemoveBlockedReason = ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: snapshot.runningEnvIDs)
+        state.projectRunAction = projectRunAction(project: project, checks: checks, snapshot: snapshot)
         state.terminalNotice = terminalNotice(project: project, unregistered: snapshot.unregistered, checks: checks)
         guard !project.environments.isEmpty else {
             state.emptyMessage = "이 프로젝트에 환경이 없습니다. \"+ 환경 추가\"를 눌러 Python을 고르세요."
@@ -581,7 +648,7 @@ public enum ResultPresentation {
         state.rows = project.environments.map {
             row(env: $0, check: checks[$0.id], snapshot: snapshot, selected: $0.id == env.id)
         }
-        let active = snapshot.active?.envID == env.id ? snapshot.active : nil
+        let active = snapshot.actives[env.id]
         // 검사 중(check == nil)은 상세에 따로 적지 않는다. 행 문구가 이미 "환경 검사 중"이다.
         let blocked = checks[env.id].flatMap { RunEligibility.reason(for: $0) }
         state.detail = detail(envID: env.id, active: active, outcome: snapshot.results[env.id],
@@ -589,6 +656,7 @@ public enum ResultPresentation {
                               external: snapshot.external[env.id], source: snapshot.sources[env.id],
                               terminalNote: ManagementPresentation.terminalDetectionNote(checks[env.id]))
         state.detail?.info = ManagementPresentation.environmentInfo(env: env, check: checks[env.id])
+        state.comparison = EnvComparison.build(project: project, checks: checks, snapshot: snapshot, selectedEnvID: env.id)
         return state
     }
 }

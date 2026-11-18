@@ -108,6 +108,12 @@ pytest가 `KeyboardInterrupt`를 감지한 경우 기록하며 v2는 `reason: "k
 
 `counts`에는 테스트 상태별 수와 함께 `not_run`(미실행)이 들어갑니다. 수집됐지만 setup·call·teardown 어느 단계도 보고되지 않은 테스트 수이며, 중지(Ctrl+C)나 `-x`처럼 도중에 끝난 실행에서 수집 수와 합계가 맞지 않는 이유를 보여 줍니다. 한 단계라도 보고된 테스트는 `incomplete`로 세므로 둘은 겹치지 않습니다. 해당 nodeid는 최상위 `not_run` 목록에 수집 순서대로 담깁니다. `session_collected`가 없는 이전 이벤트는 `session_finish.collected`와의 차이로 수만 세고 목록은 비워 둡니다. `-x`, `--maxfail`처럼 실패 때문에 pytest가 스스로 멈춘 실행은 미실행이 남아 있어도 `state: completed`, `verdict: failed`입니다. 조건은 `session_finish`가 있고, 중단(`interrupted`)·수집 오류가 아니며, `exit_code`가 1이고, 실패(`failed`) 또는 오류(`error`)가 1건 이상인 경우입니다. 이때도 `counts.not_run`과 `not_run` 목록은 그대로 담깁니다. 실패·오류 없이 미실행만 남은 실행, 일부 단계만 보고된 테스트(`counts.incomplete`)가 있는 실행은 실패가 있더라도 `incomplete`입니다. Ctrl+C 중단은 미실행 여부와 관계없이 `interrupted`입니다.
 
+`args`(9단계)는 `session_start`의 `args`(pytest 명령줄 인수 문자열 목록)를 그대로 옮긴 값입니다. 키 이름은 이벤트 필드와 같게 했습니다(`env`와 같은 방식). 환경 비교가 환경마다 실행 조건(`-k`, 경로 지정 등)이 같은지 보는 데 씁니다. 명령줄에 준 인수만 담기며 설정 파일의 `addopts`는 들어가지 않습니다. 이벤트에 `args`가 없는 옛 파일(v1 등), 목록이 아니거나 문자열이 아닌 원소가 섞인 값은 `null`입니다. 인수 없이 실행한 것은 `[]`로 `null`과 구분합니다. 이벤트가 없는 `waiting` 결과도 `args: null`을 담습니다. 형식이 틀린 `args`는 판정에 쓰지 않는 참고 정보라 집계 오류로 만들지 않습니다. 플러그인 버전은 0.3.0 그대로입니다(이벤트 형식은 바뀌지 않았고, editable 설치는 바로 반영됩니다. 이 키가 없는 집계 결과는 `null`과 같은 "알 수 없음"으로 읽으면 됩니다).
+
+```json
+{"state": "completed", "verdict": "failed", "args": ["examples/multi_env_demo"], "counts": {"passed": 5, "failed": 1, "...": 0}}
+```
+
 불완전한 JSON 줄이나 섞인 실행, 중복 단계 등은 오류를 반환합니다. 실시간으로 쓰는 파일의 부분 줄 처리는 앱이 합니다(아래). 동시 실행은 9단계입니다.
 
 ## 앱이 이벤트를 읽는 방법 (4단계)

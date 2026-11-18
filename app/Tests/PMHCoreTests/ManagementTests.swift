@@ -12,8 +12,8 @@ private let e2 = PMHEnvironment(id: "e2", name: "pmh-3.13", pythonPath: "/h/.ven
 
 /// 실행 중 상태. envID 환경이 실행 중인 스냅숏을 만든다.
 private func running(_ envID: String) -> RunSnapshot {
-    RunSnapshot(active: ActiveRun(runID: "r", envID: envID, projectPath: "/w/a",
-                                  phase: .waitingForEvents, stopping: false))
+    RunSnapshot(actives: [envID: ActiveRun(runID: "r", envID: envID, projectPath: "/w/a",
+                                           phase: .waitingForEvents, stopping: false)])
 }
 
 private func candidates() -> [PythonCandidate] {
@@ -27,27 +27,32 @@ private func candidates() -> [PythonCandidate] {
     let project = Project(path: "/w/demo", environments: [e1, e2])
 
     @Test func projectBlockedOnlyWhileItsEnvironmentRuns() {
-        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: nil) == nil)
-        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: "other") == nil)
-        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvID: "e2")
+        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: []) == nil)
+        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: ["other"]) == nil)
+        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: ["e2"])
+                == ManagementPresentation.removeBlockedReason)
+        // 9단계: 동시 실행 중이면 집합 중 하나라도 이 프로젝트 환경이면 막는다(다른 프로젝트 환경이 먼저 와도).
+        #expect(ManagementPresentation.projectRemovalBlockedReason(project, activeEnvIDs: ["other", "e1"])
                 == ManagementPresentation.removeBlockedReason)
     }
 
     @Test func environmentBlockedOnlyWhenItselfRuns() {
-        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvID: "e1") != nil)
+        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvIDs: ["e1"]) != nil)
         // 같은 프로젝트의 다른 환경이 실행 중이어도 이 환경은 지울 수 있다(■ 중지 버튼이 남기 때문이다).
-        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvID: "e2") == nil)
-        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvID: nil) == nil)
+        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvIDs: ["e2"]) == nil)
+        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvIDs: []) == nil)
+        // 9단계: 여러 환경이 실행 중이면 그 집합에 든 환경은 모두 막힌다.
+        #expect(ManagementPresentation.environmentRemovalBlockedReason(envID: "e1", activeEnvIDs: ["e2", "e1"]) != nil)
     }
 
     @Test func confirmationTextAndBlockedState() throws {
         let reg = Registry(projects: [project])
-        let p = try #require(ManagementPresentation.confirmation(for: .project(project.id), registry: reg, activeEnvID: nil))
+        let p = try #require(ManagementPresentation.confirmation(for: .project(project.id), registry: reg, activeEnvIDs: []))
         #expect(p.title == "프로젝트 \"demo\" 제거")
         #expect(p.message == "정말 제거할까요? 등록 정보만 지우고 폴더·환경은 그대로 둡니다.")
         #expect(p.canConfirm)
         let env = try #require(ManagementPresentation.confirmation(
-            for: .environment(envID: "e1", projectID: project.id), registry: reg, activeEnvID: "e1"))
+            for: .environment(envID: "e1", projectID: project.id), registry: reg, activeEnvIDs: ["e1"]))
         #expect(env.title == "환경 \"pmh-3.12\" 제거")
         #expect(!env.canConfirm && env.blockedReason == ManagementPresentation.removeBlockedReason)
     }
@@ -55,11 +60,11 @@ private func candidates() -> [PythonCandidate] {
     /// 확인 상자가 떠 있는 동안 대상이 사라지면 nil이라 화면이 상자를 닫는다.
     @Test func confirmationForMissingTargetIsNil() {
         let reg = Registry(projects: [project])
-        #expect(ManagementPresentation.confirmation(for: .project(UUID()), registry: reg, activeEnvID: nil) == nil)
+        #expect(ManagementPresentation.confirmation(for: .project(UUID()), registry: reg, activeEnvIDs: []) == nil)
         #expect(ManagementPresentation.confirmation(for: .environment(envID: "gone", projectID: project.id),
-                                                    registry: reg, activeEnvID: nil) == nil)
+                                                    registry: reg, activeEnvIDs: []) == nil)
         #expect(ManagementPresentation.confirmation(for: .environment(envID: "e1", projectID: UUID()),
-                                                    registry: reg, activeEnvID: nil) == nil)
+                                                    registry: reg, activeEnvIDs: []) == nil)
     }
 }
 

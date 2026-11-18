@@ -51,41 +51,44 @@ public enum ManagementPresentation {
     /// 프로젝트를 지금 제거할 수 없는 이유.
     /// - Parameters:
     ///   - project: 대상 프로젝트.
-    ///   - activeEnvID: 지금 실행 중인 환경 id(없으면 nil).
-    /// - Returns: 그 프로젝트의 환경이 실행 중이면 이유 문장, 아니면 nil.
+    ///   - activeEnvIDs: 지금 앱이 실행 중이거나 차례를 기다리는 환경 id 전체(RunSnapshot.runningEnvIDs).
+    /// - Returns: 그 프로젝트의 환경 중 하나라도 실행 중이면 이유 문장, 아니면 nil.
     /// 막는 이유: 실행 중인 환경을 등록에서 지우면 팝오버에서 그 행(■ 중지 버튼)이 사라져, 그 실행이 끝날 때까지
     /// 멈출 방법이 없고 다른 환경의 ▶도 꺼진 채 남는다.
-    public static func projectRemovalBlockedReason(_ project: Project, activeEnvID: String?) -> String? {
-        guard let active = activeEnvID, project.environments.contains(where: { $0.id == active }) else { return nil }
+    /// 9단계부터 동시 실행이라 "실행 중인 환경 하나"가 아니라 집합으로 본다. 하나만 보면 다른 환경 실행을 놓쳐
+    /// 실행 중인 프로젝트를 지울 수 있다.
+    public static func projectRemovalBlockedReason(_ project: Project, activeEnvIDs: Set<String>) -> String? {
+        guard project.environments.contains(where: { activeEnvIDs.contains($0.id) }) else { return nil }
         return removeBlockedReason
     }
 
     /// 환경을 지금 제거할 수 없는 이유. 실행 중인 환경 자신이면 이유 문장, 아니면 nil(이유는 위 함수와 같다).
-    public static func environmentRemovalBlockedReason(envID: String, activeEnvID: String?) -> String? {
-        activeEnvID == envID ? removeBlockedReason : nil
+    /// 매개변수 activeEnvIDs: 지금 실행 중이거나 차례를 기다리는 환경 id 전체.
+    public static func environmentRemovalBlockedReason(envID: String, activeEnvIDs: Set<String>) -> String? {
+        activeEnvIDs.contains(envID) ? removeBlockedReason : nil
     }
 
     /// 제거 확인 상자 내용을 만든다.
     /// - Parameters:
     ///   - target: 사용자가 제거를 누른 대상.
     ///   - registry: 지금 등록 정보.
-    ///   - activeEnvID: 지금 실행 중인 환경 id.
+    ///   - activeEnvIDs: 지금 실행 중이거나 차례를 기다리는 환경 id 전체.
     /// - Returns: 대상이 등록에서 이미 사라졌으면 nil(화면은 확인 상자를 닫는다). 있으면 확인 내용.
     /// 확인 상자가 떠 있는 동안 실행이 시작되면 blockedReason이 채워져 [제거]가 꺼진다(뷰 모델이 상태가 바뀔 때마다 다시 부른다).
     public static func confirmation(for target: RemovalTarget, registry: Registry,
-                                    activeEnvID: String?) -> RemovalConfirmation? {
+                                    activeEnvIDs: Set<String>) -> RemovalConfirmation? {
         switch target {
         case .project(let id):
             guard let project = registry.projects.first(where: { $0.id == id }) else { return nil }
             return RemovalConfirmation(target: target, title: "프로젝트 \"\(project.name)\" 제거",
                                        message: removeConfirmMessage,
-                                       blockedReason: projectRemovalBlockedReason(project, activeEnvID: activeEnvID))
+                                       blockedReason: projectRemovalBlockedReason(project, activeEnvIDs: activeEnvIDs))
         case .environment(let envID, let projectID):
             guard let project = registry.projects.first(where: { $0.id == projectID }),
                   let env = project.environments.first(where: { $0.id == envID }) else { return nil }
             return RemovalConfirmation(target: target, title: "환경 \"\(env.name)\" 제거",
                                        message: removeConfirmMessage,
-                                       blockedReason: environmentRemovalBlockedReason(envID: envID, activeEnvID: activeEnvID))
+                                       blockedReason: environmentRemovalBlockedReason(envID: envID, activeEnvIDs: activeEnvIDs))
         }
     }
 
